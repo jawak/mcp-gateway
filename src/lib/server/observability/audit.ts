@@ -8,7 +8,7 @@
  * Failures to write are logged loudly but never propagated: losing an audit row
  * must not take down an admin action that already happened.
  */
-import { and, desc, eq, gte, lte } from 'drizzle-orm';
+import { and, count, desc, eq, gte, lte } from 'drizzle-orm';
 import { getDb, type Db } from '../db/index.ts';
 import { auditLog } from '../db/schema.ts';
 import { uuidv7 } from '../../shared/ids.ts';
@@ -66,6 +66,68 @@ export type AuditFilter = {
 	to?: string;
 	limit?: number;
 };
+
+/**
+ * Delete audit rows older than `days`. Returns how many were removed.
+ *
+ * This is the only sanctioned way anything leaves the audit table, and it is age
+ * based: no code path deletes by actor, action or target (BR: append-only).
+ */
+export function pruneAudit(days: number, db: Db = getDb()): number {
+	const cutoff = new Date(Date.now() - Math.max(1, days) * 86_400_000).toISOString();
+	const [{ value: stale }] = db
+		.select({ value: count() })
+		.from(auditLog)
+		.where(lte(auditLog.createdAt, cutoff))
+		.all();
+	db.delete(auditLog).where(lte(auditLog.createdAt, cutoff)).run();
+	return stale;
+}
+
+/** RFC 4180 quoting so a value containing a comma or newline cannot forge columns. */
+function csvCell(value: unknown): string {
+	const text =
+		value === null || value === undefined
+			? ''
+			: typeof value === 'string'
+				? value
+				: JSON.stringify(value);
+	return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+/** CSV export for the admin log page (T-36). */
+export function auditToCsv(rows: ReturnType<typeof listAudit>): string {
+	const header = [
+		'created_at',
+		'actor_type',
+		'actor_id',
+		'action',
+		'target_type',
+		'target_id',
+		'ip',
+		'request_id',
+		'meta'
+	];
+	const lines = [header.join(',')];
+	for (const row of rows) {
+		lines.push(
+			[
+				row.createdAt,
+				row.actorType,
+				row.actorId,
+				row.action,
+				row.targetType,
+				row.targetId,
+				row.ip,
+				row.requestId,
+				row.meta
+			]
+				.map(csvCell)
+				.join(',')
+		);
+	}
+	return `${lines.join('\r\n')}\r\n`;
+}
 
 /** Newest first, capped — used by the admin timeline (T-36) and CSV export. */
 export function listAudit(filter: AuditFilter = {}, db: Db = getDb()) {
