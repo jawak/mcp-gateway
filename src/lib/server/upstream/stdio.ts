@@ -174,8 +174,13 @@ export async function connectStdio(options: StdioHandleOptions): Promise<Upstrea
 		});
 		const nextClient = new Client(CLIENT_INFO, { capabilities: {} });
 
+		// Compact by design: the health monitor reports state transitions, so this
+		// fires per failed probe and must not dump a stack every time.
 		transport.onerror = (error: Error) => {
-			log.warn({ err: error }, 'upstream transport error');
+			log.debug(
+				{ code: (error as Error & { code?: string }).code, message: redactString(error.message) },
+				'upstream transport error'
+			);
 		};
 		transport.onclose = () => {
 			const wasConnected = connected;

@@ -139,8 +139,13 @@ export async function connectRemoteHttp(options: RemoteHttpOptions): Promise<Ups
 			fetch: safeFetch
 		});
 		const nextClient = new Client({ name: 'mcp-gateway', version: '1.0.0' }, { capabilities: {} });
+		// Compact by design: the health monitor reports state transitions, so this
+		// fires per failed probe and must not dump a stack every time.
 		transport.onerror = (error: Error) => {
-			log.warn({ err: error }, 'upstream transport error');
+			log.debug(
+				{ code: (error as Error & { code?: string }).code, message: redactString(error.message) },
+				'upstream transport error'
+			);
 		};
 		transport.onclose = () => {
 			const wasConnected = connected;
