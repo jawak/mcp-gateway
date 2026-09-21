@@ -12,7 +12,8 @@ const resolve =
 		addresses.map((address) => ({ address }));
 
 describe('classifyAddress', () => {
-	const cases: Array<[string, string]> = [
+	type Kind = ReturnType<typeof classifyAddress>;
+	const cases: Array<[string, Kind]> = [
 		['127.0.0.1', 'loopback'],
 		['127.9.9.9', 'loopback'],
 		['::1', 'loopback'],

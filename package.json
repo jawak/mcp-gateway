@@ -23,7 +23,8 @@
 		"format": "prettier --write .",
 		"test": "bun test",
 		"test:unit": "bun test tests/unit",
-		"test:integration": "bun test tests/integration"
+		"test:integration": "bun test tests/integration",
+		"verify": "bun run check && bun run lint && bun test && bun run build"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
