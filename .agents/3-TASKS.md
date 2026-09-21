@@ -358,15 +358,31 @@
 
 ### T-27: Login / logout / session
 - **Deskripsi:** `routes/login/+page.server.ts` (action `default` login, `logout`), session random-id + `web_sessions`, cookie `mcpgw_session` (`HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=12h`), lock 15 menit setelah 5 gagal (per email) + rate limit per IP, pesan error generik, redirect `/admin`.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-05 · **Estimasi:** 5h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-05 · **Estimasi:** 5h
 - **File:** `src/routes/login/+page.svelte`, `src/routes/login/+page.server.ts`, `src/lib/server/governance/session.ts`, `tests/integration/login.test.ts`
 - **Acceptance:** Login benar → cookie terset & `/admin` 200; password salah 5× → terkunci 15 menit (test waktu); sesi kedaluwarsa → redirect `/login`; logout menghapus baris + cookie.
+- **Catatan implementasi (2026-09-21):**
+  - Cookie `mcpgw_session`: HttpOnly + SameSite=Lax + Path=/ + Max-Age 12 jam; `Secure` hanya saat HTTPS agar http://localhost tetap bisa dipakai dev.
+  - **Akun tak dikenal vs password salah → pesan SAMA dan waktu SAMA** (dummy argon2 verify) supaya form tidak jadi oracle enumerasi akun; ada test yang mengukur rasio waktu, bukan sekadar percaya klaimnya.
+  - 5 gagal → kunci 15 menit (penghitung di baris user, jadi ganti IP tidak mereset); `clearLoginLockout()` untuk operator; sesi kedaluwarsa dihapus saat resolve; logout **menghapus baris** sehingga cookie hasil salinan tak berguna lagi.
+  - Resolve sesi selalu memeriksa ulang status user → menonaktifkan orang langsung memutus sesi hidup mereka.
+  - **Bentuk task tidak bisa diimplementasikan apa adanya:** SvelteKit menolak `default` action berdampingan dengan named action, dan `actions` bukan ekspor sah di `+layout.server.ts`. Jadi: `/login?/login` (named) + endpoint POST `/logout`.
+  - Verifikasi HTTP nyata: 401 salah password · 303 + cookie HttpOnly saat benar · `?next=//evil.example` dipaksa ke `/admin` · `/admin` 200 dengan sesi · gagal ke-5 → 429 dan password benar pun ditolak · origin asing → 403 · logout → `/admin` redirect ke login.
+
 
 ### T-28: Hooks: session load + RBAC + CSRF + CSP
 - **Deskripsi:** `hooks.server.ts`: load user → `locals.user` (role), guard `/admin/*` (unauth → redirect, `viewer` + mutasi → 403), `config.csrf = checkOrigin` untuk semua form action, security headers (CSP, nosniff, DENY frame, Referrer-Policy, Permissions-Policy), logout-dari-jauh (user disabled → sesi mati).
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-27 · **Estimasi:** 4h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-27 · **Estimasi:** 4h
 - **File:** `src/hooks.server.ts`, `src/routes/admin/+layout.server.ts`, `tests/integration/rbac.test.ts`
 - **Acceptance:** `viewer` POST form action → 403 dan data tidak berubah; request lintas-origin ke form action → 403 CSRF; header keamanan muncul di semua respons HTML.
+- **Catatan implementasi (2026-09-21):**
+  - `hooks.server.ts`: resolve sesi → `locals.user`/`sessionId` → kebijakan akses → headers. Kebijakan (`governance/rbac.ts`) fungsi murni jadi bisa diuji sebagai tabel kasus.
+  - Pengunjung anonim → redirect login; pemanggil `/api/*` anonim → **401 jujur**, bukan halaman HTML login (kalau tidak, `fetch` "sukses" lalu gagal membingungkan); `viewer` boleh membaca, semua method mutasi → 403 `admin role required`.
+  - CSRF: `config.csrf.checkOrigin` dinyatakan eksplisit + komentar agar tidak "dioptimasi" hilang.
+  - **CSP: header yang di-set dari hook TIDAK dilengkapi nonce oleh SvelteKit** — kit menyusunnya dari kit config. Akibatnya `script-src 'self'` yang saya pasang sendiri memblokir skrip bootstrap inline SvelteKit: hidrasi mati **hanya di produksi**, semua tes tetap hijau. Diperbaiki dengan `csp: { mode: 'nonce', directives }` di `vite.config.ts`; diverifikasi lewat HTTP (`script-src 'self' 'nonce-…'` + `<script nonce>`).
+  - Penjaga anti-drift: tes membandingkan direktif di `vite.config.ts` dengan `cspDirectives()` agar dua salinan tidak bisa melenceng.
+  - `build`/`dev`/`preview` kini berjalan di Bun (`bunx --bun vite`): langkah build Node dieksekusi dengan memuat bundle SSR, dan `bun:sqlite` tidak bisa dimuat di luar Bun.
+
 
 ---
 
@@ -539,4 +555,6 @@ Release : T-42 → T-43 → T-44   |   V1.1: T-45 (T-32,T-38), T-46 (T-40,T-43) 
 | 2026-09-21 | ✅ T-21, T-23 & T-22 selesai (`e626d81`) — API key, rate limit, batas autentikasi `/mcp`; 371 test hijau |
 | 2026-09-21 | 🔎 Uji asap produksi (`3f3b8a9`): klien MCP nyata berhasil memakai gateway; menemukan entrypoint tidak memuat snapshot registry (semua kunci `no-profile`) — 300+ tes tidak bisa menangkapnya karena tes selalu menulis lewat registry di proses yang sama |
 | 2026-09-21 | ✅ T-24, T-25 & T-26 selesai (`0cad9f0` + audit) — modul governance lengkap; metrik terverifikasi pada build produksi; 392 test hijau |
+| 2026-09-21 | ✅ T-27 & T-28 selesai (`0efdb43`) — login + sesi web + RBAC + CSRF + CSP bernoce, terverifikasi end-to-end lewat HTTP; 422 test hijau |
+| 2026-09-21 | 🔎 Empat cacat nyata hanya muncul saat build/smoke, tidak tertangkap 400+ tes: CSP dari hook tak diberi nonce oleh kit (hidrasi mati only-in-production), `default`+named actions ditolak kit, `actions` ilegal di `+layout.server.ts`, build Vite perlu runtime Bun untuk `bun:sqlite` |
 | 2026-09-21 | ⚠️ File task sempat terpotong setelah T-19 (skrip pembaruan status memanggang ekor file di commit `e9303fb`). Dipulihkan dari `17bfaec` dan digabung ulang per blok `### T-xx`; 48 blok utuh. pelajaran: skrip penulisan dokumen harus memverifikasi jumlah blok sebelum & sesudah |
