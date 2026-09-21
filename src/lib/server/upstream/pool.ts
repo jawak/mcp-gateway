@@ -391,5 +391,17 @@ function sameConnection(a: UpstreamRecord, b: UpstreamRecord): boolean {
 
 export { UnconfiguredUpstreamError };
 
-/** Process-wide pool. The API process and the worker each own their own instance. */
-export const upstreamPool = new UpstreamPool();
+/**
+ * Lazily created process-wide pool.
+ *
+ * Deliberately not a module-level `new UpstreamPool()`: the constructor reads
+ * config, and an eager instance made every importer of this module (migrations,
+ * backup scripts, tests) require a fully valid environment before it could even
+ * load.
+ */
+let sharedPool: UpstreamPool | undefined;
+
+export function getUpstreamPool(): UpstreamPool {
+	sharedPool ??= new UpstreamPool();
+	return sharedPool;
+}

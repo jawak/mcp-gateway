@@ -37,6 +37,7 @@ export type GatewayApp = {
 export function createGatewayApp(options: {
 	limiter?: RateLimiter;
 	authenticate: Authenticate;
+	metrics?: NonNullable<Parameters<typeof createGatewayBackend>[0]['metrics']>;
 }): GatewayApp {
 	const db = getDb();
 	const limiter = options.limiter ?? rateLimiter;
@@ -49,6 +50,7 @@ export function createGatewayApp(options: {
 		catalog,
 		pool,
 		db,
+		metrics: options.metrics,
 		// per-key concurrency + daily quota; the auth boundary already covers the
 		// request budget so a burst cannot even reach here
 		guard: {

@@ -50,6 +50,11 @@ export type BackendOptions = {
 	};
 	db?: Db;
 	log?: Logger;
+	/** Metrics sink (T-26); optional so tests and libraries stay dependency-free. */
+	metrics?: {
+		recordCall(input: { upstream: string; tool: string; status: string; durationMs: number }): void;
+		recordRateLimited(keyName: string): void;
+	};
 };
 
 export function createGatewayBackend(options: BackendOptions): GatewayBackend {
@@ -97,6 +102,12 @@ export function createGatewayBackend(options: BackendOptions): GatewayBackend {
 			: () => undefined;
 		try {
 			const result = await attempt(upstream, original, args, context);
+			options.metrics?.recordCall({
+				upstream: upstream.slug,
+				tool: original,
+				status: result.isError ? 'error' : 'ok',
+				durationMs: Date.now() - started
+			});
 			recordCall({
 				requestId: caller.requestId,
 				apiKeyId: caller.apiKeyId,
@@ -113,13 +124,20 @@ export function createGatewayBackend(options: BackendOptions): GatewayBackend {
 			});
 			return result;
 		} catch (error) {
+			const outcome = error instanceof UpstreamUnavailableError ? 'rejected' : statusFor(error);
+			options.metrics?.recordCall({
+				upstream: upstream.slug,
+				tool: original,
+				status: outcome,
+				durationMs: Date.now() - started
+			});
 			recordCall({
 				requestId: caller.requestId,
 				apiKeyId: caller.apiKeyId,
 				upstreamId: upstream.id,
 				tool: name,
 				upstreamTool: original,
-				status: error instanceof UpstreamUnavailableError ? 'rejected' : statusFor(error),
+				status: outcome,
 				durationMs: Date.now() - started,
 				reqBytes: byteLength(args),
 				error: error instanceof Error ? error.message : String(error),

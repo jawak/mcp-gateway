@@ -40,11 +40,11 @@ describe('/healthz', () => {
 });
 
 describe('/metrics', () => {
-	test('returns 501 until T-26 mounts prom-client', async () => {
+	test('is closed (404) until a scrape token is configured', async () => {
 		const res = await router()(new Request(url('/metrics')));
-		expect(res.status).toBe(501);
+		expect(res.status).toBe(404);
 		const body = (await res.json()) as { error: string };
-		expect(body.error).toBe('not_implemented');
+		expect(body.error).toBe('not_found');
 	});
 });
 

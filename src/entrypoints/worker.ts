@@ -9,7 +9,7 @@
  */
 import { getConfig } from '../lib/server/config.ts';
 import { waitForMigrations } from '../lib/server/db/migrate.ts';
-import { upstreamPool } from '../lib/server/upstream/pool.ts';
+import { UpstreamPool } from '../lib/server/upstream/pool.ts';
 import { HealthMonitor, loadUpstreamRecords } from '../lib/server/upstream/health.ts';
 import { events } from '../lib/server/registry/events.ts';
 import { logger } from '../lib/server/observability/logger.ts';
@@ -21,8 +21,9 @@ const config = getConfig();
 const schemaVersion = await waitForMigrations({ timeoutMs: 60_000 });
 log.info({ schema_version: schemaVersion, interval_ms: config.healthIntervalMs }, 'worker started');
 
-const health = new HealthMonitor(upstreamPool, { listRecords: () => loadUpstreamRecords() });
-upstreamPool.startIdleSweeper(60_000);
+const pool = new UpstreamPool();
+const health = new HealthMonitor(pool, { listRecords: () => loadUpstreamRecords() });
+pool.startIdleSweeper(60_000);
 
 let sweeping = false;
 async function tick(): Promise<void> {
@@ -64,7 +65,7 @@ function stop(signal: string): void {
 	clearInterval(timer);
 	log.info({ signal }, 'worker stopping');
 	events.emit('shutdown', { reason: signal === 'SIGINT' ? 'SIGINT' : 'SIGTERM' });
-	void upstreamPool
+	void pool
 		.closeAll(5_000)
 		.catch((error: unknown) => log.error({ err: error }, 'pool shutdown failed'))
 		.finally(() => process.exit(0));

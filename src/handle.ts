@@ -31,6 +31,11 @@ export type RouterDeps = {
 	 * 503 so operators get an unambiguous signal instead of a silent 404.
 	 */
 	mcp?: (request: Request, context: RequestContext) => Promise<Response>;
+	/**
+	 * Prometheus exposition (T-26). Without a token the route stays closed: an
+	 * unauthenticated metrics endpoint leaks key names and traffic shape.
+	 */
+	metrics?: { expose(): Promise<string>; token?: string; beforeScrape?: () => void };
 	version?: string;
 	maxBodyBytes?: number;
 	trustProxy?: boolean;
@@ -39,7 +44,7 @@ export type RouterDeps = {
 const MCP_METHODS = ['POST', 'GET', 'DELETE'];
 
 export function createFetchHandler(deps: RouterDeps): (request: Request) => Promise<Response> {
-	const { sveltekit, mcp } = deps;
+	const { sveltekit, mcp, metrics } = deps;
 	// Config is only consulted for values the caller did not provide, so tests
 	// and embedders can build a router without any environment variables.
 	const version = deps.version ?? getConfig().version;
@@ -73,7 +78,7 @@ export function createFetchHandler(deps: RouterDeps): (request: Request) => Prom
 			case '/healthz':
 				return decorate(handleHealthz(version));
 			case '/metrics':
-				return decorate(handleMetrics());
+				return decorate(await handleMetrics(metrics, request));
 			case '/mcp': {
 				// MCP Streamable HTTP only allows POST/GET/DELETE; anything else is
 				// refused here so it never reaches auth or a session.
@@ -113,11 +118,32 @@ function handleHealthz(version: string): Response {
 	});
 }
 
-function handleMetrics(): Response {
-	return json(
-		{ error: 'not_implemented', message: 'Prometheus exposition arrives in T-26' },
-		{ status: 501 }
-	);
+async function handleMetrics(metrics: RouterDeps['metrics'], request: Request): Promise<Response> {
+	if (!metrics?.token) {
+		// no token configured ⇒ the endpoint is not exposed at all
+		return json({ error: 'not_found' }, { status: 404 });
+	}
+	const provided = (request.headers.get('authorization') ?? '').replace(/^Bearer /, '').trim();
+	if (!timingSafeEqual(provided, metrics.token)) {
+		return json(
+			{ error: 'unauthorized' },
+			{ status: 401, headers: { 'www-authenticate': 'Bearer realm="metrics"' } }
+		);
+	}
+	metrics.beforeScrape?.();
+	return new Response(await metrics.expose(), {
+		status: 200,
+		headers: { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' }
+	});
+}
+
+/** Constant-time compare so a probe cannot binary-search the token. */
+function timingSafeEqual(a: string, b: string): boolean {
+	if (a.length !== b.length) return false;
+	let diff = 0;
+	for (let index = 0; index < a.length; index += 1)
+		diff |= (a.charCodeAt(index) ^ b.charCodeAt(index))!;
+	return diff === 0;
 }
 
 /**

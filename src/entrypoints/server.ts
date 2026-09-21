@@ -19,6 +19,7 @@ import { createFetchHandler } from '../handle.ts';
 import { createGatewayApp } from '../lib/server/gateway-app.ts';
 import { ensureLoaded } from '../lib/server/registry/index.ts';
 import { createMcpAuthenticator } from '../middleware/auth.ts';
+import { metrics } from '../lib/server/observability/metrics.ts';
 import {
 	PayloadTooLargeError,
 	toWebRequest,
@@ -104,9 +105,22 @@ async function createApp(): Promise<() => Promise<void>> {
 	// The gateway serves its in-memory config snapshot, so it has to be loaded
 	// before the first request — otherwise every key looks like it has no profile.
 	ensureLoaded();
-	const gateway = createGatewayApp({ authenticate: createMcpAuthenticator() });
+	const gateway = createGatewayApp({
+		authenticate: createMcpAuthenticator({ metrics }),
+		metrics
+	});
 	const handleFetch = createFetchHandler({
 		mcp: (request, context) => gateway.endpoint.handle(request, context),
+		metrics: {
+			expose: () => metrics.expose(),
+			token: process.env.MCPGW_METRICS_TOKEN,
+			beforeScrape: () =>
+				metrics.refreshGauges({
+					sessions: gateway.sessions,
+					catalog: gateway.catalog,
+					pool: gateway.pool
+				})
+		},
 		sveltekit: async (request, context) => {
 			const staticResponse = await serveStatic(request, { root: clientDir });
 			if (staticResponse) return staticResponse;

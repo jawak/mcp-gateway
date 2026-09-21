@@ -51,6 +51,8 @@ export type AuthenticatorOptions = {
 	log?: Logger;
 	/** Overridable for tests. */
 	now?: () => number;
+	/** Metrics sink (T-26). */
+	metrics?: { recordRateLimited(keyName: string): void; recordAuthFailure(reason: string): void };
 };
 
 export function limitsForProfile(profileId: string): Limits {
@@ -130,6 +132,7 @@ export function createMcpAuthenticator(options: AuthenticatorOptions = {}): Auth
 		});
 		if (!outcome.ok) {
 			const state = recordFailure(ip);
+			options.metrics?.recordAuthFailure(outcome.reason);
 			if (state.count === 1 || state.count % AUDIT_EVERY === 0) {
 				recordAudit({
 					actorType: 'api_key',
@@ -165,6 +168,7 @@ export function createMcpAuthenticator(options: AuthenticatorOptions = {}): Auth
 		const limits = limitsForProfile(outcome.profileId);
 		const budget = limiter.takeRequest(outcome.key.id, limits, now());
 		if (!budget.ok) {
+			options.metrics?.recordRateLimited(outcome.key.name);
 			return {
 				response: jsonResponse(
 					429,
