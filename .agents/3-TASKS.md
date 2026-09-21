@@ -105,9 +105,17 @@
 
 ### T-07: Upstream remote HTTP + SSRF guard
 - **Deskripsi:** `upstream/remote-http.ts` dengan `StreamableHTTPClientTransport` (atau varian Web-standard) + `ssrfFetch` sebagai `fetch`; auth header dari `headers_ref`; `TLS verify` toggle; handshake & capability capture; timeout connect 5 s; dukung SSE resume via `Last-Event-ID` bila upstream mengirimnya.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-06 · **Estimasi:** 5h
-- **File:** `src/lib/server/upstream/{remote-http,ssrf-fetch}.ts`, `tests/integration/remote-upstream.test.ts`
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-06 · **Estimasi:** 5h
+- **File:** `src/lib/server/upstream/remote-http.ts`, `src/lib/server/config.ts`, `tests/fixtures/{register-tools,http-mcp-server}.ts`, `tests/integration/remote-upstream.test.ts`
 - **Acceptance:** Terhubung ke MCP server HTTP lokal (fixture) dan memanggil 1 tool; URL `http://` (non-localhost) dan metadata IP → ditolak dengan error actionable.
+- **Catatan implementasi (2026-09-21):**
+  - `authStyle`: `bearer` (default, menambah prefix `Bearer ` bila kredensial belum memuatnya) | `header` (kirim mentah, `authName` kustom) | `none`; `headersRef` menerima JSON objek secret dari vault untuk header statis tambahan. `ssrf-fetch.ts` tidak dibuat terpisah — `security/ssrf.ts` (T-05) sudah menyediakan `createSsrfSafeFetch` yang cocok dengan tipe `FetchLike` SDK.
+  - Env baru: `MCPGW_ALLOW_PRIVATE_NETWORK` (default false; link-local/metadata tetap diblokir), `MCPGW_ALLOW_INSECURE_TLS`, `MCPGW_UPSTREAM_CONNECT_TIMEOUT_S`.
+  - **3 jebakan yang ditemukan lewat test (dicatat agar tidak terulang):**
+    1. fixture stateless wajib `enableJsonResponse: true` — tanpa itu respons berupa stream SSE yang terpotong.
+    2. jangan tutup server/transport saat `request.signal` abort: Bun sudah men-settle signal itu begitu request body dikonsumsi → tool lambat tidak pernah dijawab (client timeout).
+    3. exception di handler MCP upstream menjadi hasil `isError`, bukan error transport — retry T-16 hanya untuk `UpstreamTransportError`.
+  - Fixture dibagi: `registerFixtureTools()` dipakai stdio & HTTP + tool `slow_watchdog` untuk uji pembatalan nanti. SSE resume (`Last-Event-ID`) diuji pada sisi server kita sendiri di T-12.
 
 ### T-08: Pool koneksi upstream
 - **Deskripsi:** `upstream/pool.ts`: mode `pinned` (warm saat boot) vs `lazy` (spawn on-demand), LRU + `idleTtl` 10 menit, maks `MCPGW_MAX_LIVE_UPSTREAMS`, semaphore konkurensi per upstream, `close(slug, { grace: 30_000 })` yang menunggu `tools/call` aktif selesai, `closeAll()` untuk shutdown, event `pool:*` untuk observability.
@@ -415,3 +423,4 @@ Release : T-42 → T-43 → T-44   |   V1.1: T-45 (T-32,T-38), T-46 (T-40,T-43) 
 | 2026-09-21 | ✅ T-04 selesai (`99ad3d7`) — 14 tabel + migrasi + seed + backup; **test runner pindah ke `bun:test`** (vitest tidak bisa akses `bun:sqlite`) |
 | 2026-09-21 | ✅ T-05 selesai (`9b386b1`) — vault AES-GCM, env-resolve, redact, SSRF guard; 128 test hijau |
 | 2026-09-21 | ✅ T-06 selesai (`f9a18c7`) — transport stdio + kontrak `UpstreamHandle` + FailureTracker; 151 test hijau |
+| 2026-09-21 | ✅ T-07 selesai (`9416db9`) — transport remote HTTP + fixture Streamable HTTP in-process; 167 test hijau |
