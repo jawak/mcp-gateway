@@ -15,6 +15,13 @@ export default defineConfig({
 			adapter: adapter()
 		})
 	],
+	build: {
+		rollupOptions: {
+			// entrypoints are bundled by scripts/build-server.ts, and @sveltejs/kit
+			// must stay external so the bundled server shares one module instance
+			external: ['@sveltejs/kit', '@sveltejs/kit/*', '@sveltejs/adapter-node/*']
+		}
+	},
 	test: {
 		expect: { requireAssertions: true },
 		projects: [

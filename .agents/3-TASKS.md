@@ -25,9 +25,16 @@
 
 ### T-01: Scaffold SvelteKit + Bun + tooling
 - **Deskripsi:** Scaffold SvelteKit 2 / Svelte 5 (TS strict), pasang Tailwind 4, ESLint+Prettier, tsconfig strict, `.editorconfig`, `.gitignore` (+ `data/`, `.env`), inisialisasi git. Tambah `svelte.config.js` dengan `adapter-node` (sudah termasuk di T-02, di sini hanya scaffold + lint gate).
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** — · **Estimasi:** 3h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** — · **Estimasi:** 3h
 - **File:** `package.json`, `svelte.config.js`, `vite.config.ts`, `tsconfig.json`, `eslint.config.js`, `.prettierrc`, `.gitignore`, `.editorconfig`, `src/app.css`, `src/app.d.ts`
 - **Acceptance:** `bun install`, `bun run check`, `bun lint`, `bun run build` hijau; halaman `/` default SvelteKit ter-render.
+- **Catatan implementasi (2026-09-21):**
+  - Scaffold: `bunx sv@0.17 create --template minimal --types ts --add prettier eslint vitest="usages:unit" tailwindcss="plugins:none" sveltekit-adapter="adapter:node" --install bun` → **`svelte.config.js` tidak lagi dibuat**, adapter dikonfigurasi di `vite.config.ts` (`sveltekit({ adapter: adapter() })`).
+  - Dep runtime dipasang sekaligus: `@modelcontextprotocol/sdk@1.30.0`, `zod@4.6.5` (v4!), `argon2`, `pino`, `prom-client`, `yaml`, `drizzle-orm`; dev: `drizzle-kit`, `@types/bun`, `flowbite(-svelte)`, `chart.js`, `codemirror`, `pino-pretty`.
+  - `src/routes/layout.css` → `src/app.css` (sesuaikan `prettier.config.js: tailwindStylesheet`); contoh vitest bawaan dihapus; vitest dipecah project `unit` (`tests/unit`) + `integration` (`tests/integration`, `pool: forks`).
+  - `.prettierignore` menambah `/.agents/` agar dokumen spec tidak di-reformat; `--passWithNoTests` di script test.
+  - **Penting untuk T-02:** output adapter-node (`.svelte-kit/output/server/index.js`) hanya meng-*export* handler, tidak listen sendiri → `Bun.serve` + `@sveltejs/adapter-node/handler` memang wajib. Verifikasi build: `bun run preview`.
+  - Gate hijau: `check` 0 error · `lint` pass · `test` pass · `build` pass · `preview /` HTTP 200. Commit `cba6a7e`.
 
 ### T-02: Custom server Bun + router `/mcp` `/metrics` `/healthz`
 - **Deskripsi:** Buat `src/entrypoints/server.ts` (Bun.serve → `handleFetch`) dan `src/handle.ts` sebagai router: `/mcp` → stub handler `501` (diisi T-18), `/metrics` → stub, `/healthz` → JSON `{ ok, version, upstreams, sessions }`, sisanya → SvelteKit handler dari adapter-node. Graceful shutdown (drain 30s), `maxBodySize: 1_048_576`, `MCPGW_TRUST_PROXY` → IP dari `X-Forwarded-For` 1 hop. Script `start` yang resolve build output adapter-node.
@@ -369,3 +376,4 @@ Release : T-42 → T-43 → T-44   |   V1.1: T-45 (T-32,T-38), T-46 (T-40,T-43) 
 |---|---|
 | 2026-09-21 | Draft awal: 48 task dari Tech Spec v1.0 (V1.0 = T-01…T-44, V1.1 = T-45…T-46, backlog v2 = T-47…T-48) |
 | 2026-09-21 | Event bus dipindah ke T-03; T-23/T-24 ditukar agar dependensi terurut topologis; jalur kritis & matriks dependensi dikoreksi; total jam V1.0 = 229 |
+| 2026-09-21 | ✅ T-01 selesai (commit `cba6a7e`) — semua gate hijau; catatan penting: `svelte.config.js` tidak dibuat oleh sv 0.17, adapter di `vite.config.ts` |
