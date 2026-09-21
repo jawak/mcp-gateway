@@ -119,15 +119,29 @@
 
 ### T-08: Pool koneksi upstream
 - **Deskripsi:** `upstream/pool.ts`: mode `pinned` (warm saat boot) vs `lazy` (spawn on-demand), LRU + `idleTtl` 10 menit, maks `MCPGW_MAX_LIVE_UPSTREAMS`, semaphore konkurensi per upstream, `close(slug, { grace: 30_000 })` yang menunggu `tools/call` aktif selesai, `closeAll()` untuk shutdown, event `pool:*` untuk observability.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-06 · **Estimasi:** 6h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-06 · **Estimasi:** 6h
 - **File:** `src/lib/server/upstream/pool.ts`, `tests/integration/pool.test.ts`
 - **Acceptance:** `get()` dua kali → 1 koneksi; idle > TTL → tertutup (spawn count naik lagi setelah `get()`); `close()` saat call aktif → call selesai lalu koneksi ditutup; jumlah proses child = 0 setelah `closeAll()` (dicek via `ps` di test).
+- **Catatan implementasi (2026-09-21, `d5e3fd2`):**
+  - `get()` idempoten per upstream; reconnect otomatis bila `connection`/`env_refs`/`timeout` berubah; connect yang bersamaan untuk slug sama digabung (1 proses, bukan N).
+  - Eviction LRU hanya menyentuh upstream `lazy` dan memakai tie-breaker monotonic agar deterministik (dua touch dalam milidetik yang sama pernah membuat tes tidak stabil).
+  - Semaphore FIFO per upstream + `queueWaitMs` → overload jadi error bersih, bukan antrian tak terbatas.
+  - **2 bug nyata yang ditemukan test:** (1) setelah upstream dirilis, `#releaseSlot` sempat menyerahkan slot mati ke pengantri — sekarang pengantri ditolak; (2) `StdioClientTransport.close()` hanya menutup stdin + SIGTERM lewat timer `unref` → handle stdio kini menunggu, SIGTERM, lalu SIGKILL; test membuktikan 0 proses anak tersisa setelah `closeAll()`.
+
 
 ### T-09: Health checker + circuit breaker
 - **Deskripsi:** `upstream/health.ts`: probe `ping` bila capability ada, else `tools/list` (timeout 5 s); transisi `healthy/degraded/down/unconfigured` per BR/Alur 4 (3× gagal → `down`, 2× sukses → `healthy`, `degraded` saat latensi > 50% timeout); backoff eksponensial ≤ 5 menit; lewati upstream `lazy` tanpa koneksi hidup; tulis `upstream_health`; emit `registry.healthChanged` → invalidasi catalog + gauge metrics. `worker.ts` sebagai scheduler loop (`MCPGW_HEALTH_INTERVAL_S`).
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-08 · **Estimasi:** 5h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-08 · **Estimasi:** 5h
 - **File:** `src/lib/server/upstream/health.ts`, `src/entrypoints/worker.ts`, `tests/unit/health.test.ts`
 - **Acceptance:** Tabel transisi teruji (fake probe): 2 gagal → masih healthy, 3 → down, 2 sukses → healthy; interval probe mengikuti backoff; worker tidak menjalankan probe saat `schema_version` belum cocok.
+- **Catatan implementasi (2026-09-21, `5628a10`):**
+  - Probe = `ping` bila capability ada, else `tools/list` (cap 5 s); `degraded` di atas 50% `timeout_ms`; 3 gagal → `down`, 2 sukses → `healthy`.
+  - **Keputusan desain:** backoff hanya mem-throttle upstream yang sudah `down` (sesuai PRD "interval probe upstream *down* = 30s × 2ⁿ, maks 5 menit") — kalau tidak, upstream flapping butuh menit untuk dinyatakan down.
+  - Upstream `lazy` yang belum hidup tidak di-probe (menjawab "apakah dia hidup?" tidak boleh menghasilkan spawn proses).
+  - Baris `upstream_health` memakai `upstream_id` (FK) dan error yang sudah diredaksi; `/healthz` diisi ulang tiap sweep; event `health.changed` dikirim ke bus.
+  - Worker: tunggu schema → sweep langsung → interval; sweep yang tumpang-tindih dilewati; SIGTERM menguras pool.
+  - Log `transport.onerror` diturunkan ke debug tanpa stack (health yang melaporkan transisi) — sebelumnya 3 stack besar per probe gagal.
+
 
 ---
 
@@ -135,15 +149,25 @@
 
 ### T-10: Namespacing tool
 - **Deskripsi:** `mcp/namespacing.ts`: `qualify(slug, name)` = `<slug>__<name>`, sanitasi charset, aturan > 64 char (`slug[..12]-<b32(sha1)>__<name[..31]-<hash6>>`), `split(gname)`, `build()` menghasilkan `{ list, byName }` dengan deteksi collision → error eksplisit (bukan rename diam-diam). Kontrak simetris `split(qualify(x)) === x`.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-04 · **Estimasi:** 4h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-04 · **Estimasi:** 4h
 - **File:** `src/lib/server/mcp/namespacing.ts`, `tests/unit/namespacing.test.ts`
 - **Acceptance:** 200+ nama (termasuk Unicode, spasi, >64 char) lolos regex `^[A-Za-z0-9_.-]{1,64}$`; collision → throw; properti test (fast-check) untuk simetri.
+- **Catatan implementasi (2026-09-21, `e165494`):**
+  - `qualify()` sanitasi ke `[A-Za-z0-9_.-]`, dan untuk nama > 64 char memakai `slug[0..12]-<hash6>__tool[0..31]-<hash6>` (hash sha1 atas nama penuh) → deterministik dan nama panjang berbeda tidak runtuh ke satu nama.
+  - `build()` mengumpulkan **semua** collision (dalam satu upstream maupun lintas upstream) lalu melempar `NamespacingError`; tidak pernah rename diam-diam karena tool kedua jadi tak terjangkau tanpa ada yang sadar.
+  - Property test 4000 kombinasi slug/tool acak (termasuk Unicode/spasi/karakter kontrol) memvalidasi bentuk, batas 64, determinisme, dan tingkat collision hasil truncation.
+
 
 ### T-11: Filter glob profil
 - **Deskripsi:** `shared/glob.ts` (`*`, `?`, `[…]`, tanpa regex injection) + evaluasi deny > allow untuk nama tool, resource URI, dan prompt name (BR-03).
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-04 · **Estimasi:** 2h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-04 · **Estimasi:** 2h
 - **File:** `src/lib/shared/glob.ts`, `tests/unit/glob.test.ts`
 - **Acceptance:** Test matrix: `["*"]` + deny `["*delete*"]`; pattern ilegal (mis. `[a-`) → `ValidationError`; perform < 1 ms untuk 1.000 nama.
+- **Catatan implementasi (2026-09-21, `e165494`):**
+  - Glob diterjemahkan manual ke RegExp ber-anchor (`^...$`) — input user tidak pernah masuk apa adanya ke `new RegExp()`; metachar regex (`| ( ) { }` dll) diperlakukan literal.
+  - Didukung: `*`, `?`, `[a-c]`, `[!a-c]`/`[^a-c]`, escape `\`, dash pertama/terakhir dalam class sebagai literal. Ditolak dengan `GlobPatternError`: class belum ditutup/terbalik (`[9-0]`), class kosong, escape menggantung, pola kosong, pola > 256 char.
+  - `isAllowed()` mewajibkan deny menang atas allow (BR-03); `assertValidPatterns()` siap dipakai form admin (FR-14); hasil kompilasi di-cache (10 ribu evaluasi pola < 50 ms).
+
 
 ---
 
@@ -424,3 +448,6 @@ Release : T-42 → T-43 → T-44   |   V1.1: T-45 (T-32,T-38), T-46 (T-40,T-43) 
 | 2026-09-21 | ✅ T-05 selesai (`9b386b1`) — vault AES-GCM, env-resolve, redact, SSRF guard; 128 test hijau |
 | 2026-09-21 | ✅ T-06 selesai (`f9a18c7`) — transport stdio + kontrak `UpstreamHandle` + FailureTracker; 151 test hijau |
 | 2026-09-21 | ✅ T-07 selesai (`9416db9`) — transport remote HTTP + fixture Streamable HTTP in-process; 167 test hijau |
+| 2026-09-21 | ✅ T-08 selesai (`d5e3fd2`) — pool koneksi; 2 bug nyata diperbaiki (slot mati ke pengantri, proses anak yatim) |
+| 2026-09-21 | ✅ T-09 selesai (`5628a10`) — health monitor + circuit breaker + worker; backoff khusus untuk upstream `down` |
+| 2026-09-21 | ✅ T-10 & T-11 selesai (`e165494`) — namespacing + filter glob; 233 test hijau |
