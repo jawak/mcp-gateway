@@ -221,21 +221,37 @@
 
 ### T-16: Routing `tools/call`
 - **Deskripsi:** `mcp/gateway.ts` handler `tools/call`: lookup `byName` → `unknown tool` (-32602); cek scope/denylist; timeout `min(upstream.timeout_ms, 300_000)`; pass-through argumen & `content` (hanya tambah `_meta.upstreamTool`); retry 1x **hanya** untuk error transport (EPIPE/timeout/spawn fail), `isError: true` tidak di-retry; forward `notifications/progress` bila ada `progressToken`; tulis `tool_calls` + metrics (via T-21).
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-15, T-13 · **Estimasi:** 6h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-15, T-13 · **Estimasi:** 6h
 - **File:** `src/lib/server/mcp/gateway.ts`, `src/lib/server/observability/usage.ts` (helper tulis `tool_calls` + hook metrics, dilengkapin di T-26), `tests/integration/tools-call.test.ts`
 - **Acceptance:** `tools/call` ke 2 upstream berbeda mengembalikan hasil benar; upstream yang di-matikan → error `upstream unavailable`; timeout dihormati (test 1 s pada upstream tidur); retry terjadi tepat 1x (assert spawn count); baris `tool_calls` lengkap (status, duration_ms, req/res bytes, request_id).
+- **Catatan implementasi (2026-09-21):**
+  - Rute diambil dari catalog sehingga `tools/list` dan `tools/call` tidak mungkin berbeda pendapat; tool yang tersaring filter juga tidak bisa dipanggil dengan menebak nama.
+  - **Retry hanya untuk koneksi mati.** Timeout/pembatalan klien sengaja non-retryable (`toTransportError`): upstream bisa saja sudah menjalankan efek samping setelah kita berhenti mendengarkan — retry berarti mengirim pesan / membuka PR dua kali.
+  - Cooldown respawn yang hampir habis **ditunggu** (budget 3 s, loop + slack 25 ms), bukan langsung gagal: crash yang pulih dalam <1 detik tidak boleh menghukum model. Cool-down panjang tetap gagal cepat agar slot request tidak tergadai.
+  - Bug serius ditemukan e2e: SDK mengirim `onclose` untuk transport yang sudah diganti → backoff restart mundur terus dan call berikutnya menunggu crash yang sudah pulih. Diperbaiki dengan spawn generation.
+  - `tool_calls` ditulis untuk SEMUA hasil (ok/error/rejected/timeout/rate_limited) sehingga error rate bisa dipercaya; payload hanya saat MCPGW_DEBUG, dan itupun dibatasi + diredaksi.
+
 
 ### T-17: Proksi resources
 - **Deskripsi:** `mcp/resources.ts`: `resources/list` (fan-out + namespacing URI `sluggified://` atau prefix aman), `resources/read` routing balik, `resources/templates/list`, `resources/subscribe` dideklarasikan hanya bila semua upstream dalam profil mendukung (all-or-nothing, BR-14), emit `listChanged`.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-14 · **Estimasi:** 5h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-14 · **Estimasi:** 5h
 - **File:** `src/lib/server/mcp/resources.ts`, `tests/integration/resources.test.ts`
 - **Acceptance:** Resource dari 2 upstream muncul tergabung tanpa tabrakan URI; `resources/read` URI milik upstream A tidak pernah dikirim ke B; upstream tanpa capability → di-skip.
+- **Catatan implementasi (2026-09-21):**
+  - URI diqualify `scheme://<slug>__path` dengan `qualifyUri`/`unqualifyUri` (reversible); bug awal: `resolveResourceUri` mencari prefix di depan padahal slug berada setelah skema.
+  - Allow/deny profil berlaku juga untuk URI resource (BR-03 mencakup tool, URI, dan nama prompt — sebelumnya hanya tool).
+  - `resources/subscribe` hanya diumumkan bila **semua** upstream dalam scope memang mendeklarasikannya (BR-14), supaya klien tidak pernah menerima langganan yang diam-diam tidak berfungsi.
+
 
 ### T-18: Proksi prompts
 - **Deskripsi:** `mcp/prompts.ts`: `prompts/list` fan-out + namespacing, `prompts/get` routing balik + validasi argumen (deklarasikan argumen upstream apa adanya), `listChanged`, filter glob mengikuti T-15.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-14 · **Estimasi:** 4h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-14 · **Estimasi:** 4h
 - **File:** `src/lib/server/mcp/prompts.ts`, `tests/integration/prompts.test.ts`
 - **Acceptance:** `prompts/get` mengembalikan messages dari upstream yang benar; prompt name duplikat antar-upstream tetap terbedakan.
+- **Catatan implementasi (2026-09-21):**
+  - Nama prompt memakai `qualify()` yang sama dengan tool (nama mentah tidak pernah sampai ke klien), dan filter profil berlaku padanya.
+  - Argumen diteruskan apa adanya; validasi milik skema upstream (error mereka yang muncul, bukan terjemahan kita).
+
 
 ---
 
