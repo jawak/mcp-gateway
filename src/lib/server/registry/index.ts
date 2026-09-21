@@ -17,12 +17,35 @@ import { uuidv7 } from '../../shared/ids.ts';
 import { isPast, nowIso } from '../../shared/time.ts';
 import { events } from './events.ts';
 import { logger } from '../observability/logger.ts';
+import { recordAudit } from '../observability/audit.ts';
 import { status } from '../observability/status.ts';
 import type { UpstreamRecord } from '../upstream/types.ts';
 
 const log = logger.child({ component: 'registry' });
 
 export const SLUG_PATTERN = /^[a-z0-9-]{2,32}$/;
+
+/**
+ * Every write takes these. `db` may still be passed positionally by tests and
+ * scripts; `actorId`/`ip`/`requestId` exist so each configuration change leaves an
+ * audit trail (T-25) rather than only a timestamp.
+ */
+export type WriteOptions = {
+	db?: Db;
+	actorId?: string | null;
+	ip?: string | null;
+	requestId?: string | null;
+};
+
+function writeOptions(
+	input: Db | WriteOptions = {}
+): Required<Omit<WriteOptions, 'actorId' | 'ip' | 'requestId'>> & WriteOptions {
+	// a Drizzle instance is object-like but has no `db` property
+	const isOptions =
+		typeof (input as WriteOptions).db !== 'undefined' || !('select' in (input as object));
+	const options = (isOptions ? input : { db: input as Db }) as WriteOptions;
+	return { ...options, db: options.db ?? getDb() };
+}
 
 export class RegistryError extends Error {
 	readonly code: string;
@@ -164,6 +187,33 @@ export function scopeForProfile(profileId: string): ScopeEntry[] {
 	return getProfile(profileId)?.links ?? [];
 }
 
+function audit(
+	action: string,
+	targetId: string,
+	actorId: string | null | undefined,
+	ip: string | null | undefined,
+	requestId: string | null | undefined,
+	meta: Record<string, unknown>,
+	db: Db
+): void {
+	recordAudit({
+		actorType: 'user',
+		actorId: actorId ?? null,
+		action,
+		targetType: 'config',
+		targetId,
+		ip: ip ?? null,
+		requestId: requestId ?? null,
+		meta,
+		db
+	});
+}
+
+/** Names are friendlier than ids in an audit timeline; the id is still recorded. */
+function profileNameOf(profileId: string): string {
+	return snapshot.profilesById.get(profileId)?.name ?? profileId;
+}
+
 export function assertValidSlug(slug: string): void {
 	if (!SLUG_PATTERN.test(slug)) {
 		throw new RegistryError(
@@ -182,7 +232,11 @@ export type CreateUpstreamInput = Omit<UpstreamPatch, 'id'> & {
 	enabled?: boolean;
 };
 
-export function createUpstream(input: CreateUpstreamInput, db: Db = getDb()): UpstreamRecord {
+export function createUpstream(
+	input: CreateUpstreamInput,
+	writer: Db | WriteOptions = {}
+): UpstreamRecord {
+	const { db, actorId, ip, requestId } = writeOptions(writer);
 	assertValidSlug(input.slug);
 	if (snapshot.upstreamsBySlug.has(input.slug)) {
 		throw new RegistryError('duplicate_slug', `an upstream named "${input.slug}" already exists`);
@@ -207,6 +261,16 @@ export function createUpstream(input: CreateUpstreamInput, db: Db = getDb()): Up
 		.run();
 	reload(db);
 	events.emit('upstream.changed', { slug: input.slug, enabled: input.enabled ?? true });
+	// the definition may reference secrets, so only the shape goes into the audit row
+	audit(
+		'upstream.create',
+		input.slug,
+		actorId,
+		ip,
+		requestId,
+		{ transport: input.transport, pin: input.pin ?? 'pinned' },
+		db
+	);
 	log.info({ slug: input.slug, transport: input.transport }, 'upstream created');
 	return getUpstreamById(id) as UpstreamRecord;
 }
@@ -215,7 +279,12 @@ export function createUpstream(input: CreateUpstreamInput, db: Db = getDb()): Up
  * Update an upstream. `slug` is deliberately not updatable: it is the namespace
  * prefix every client already sees (BR-02).
  */
-export function updateUpstream(id: string, patch: UpstreamPatch, db: Db = getDb()): UpstreamRecord {
+export function updateUpstream(
+	id: string,
+	patch: UpstreamPatch,
+	writer: Db | WriteOptions = {}
+): UpstreamRecord {
+	const { db, actorId, ip, requestId } = writeOptions(writer);
 	const existing = snapshot.upstreamsById.get(id);
 	if (!existing) throw new RegistryError('not_found', 'upstream not found');
 	if (patch.timeoutMs !== undefined && (patch.timeoutMs < 1_000 || patch.timeoutMs > 600_000)) {
@@ -239,17 +308,40 @@ export function updateUpstream(id: string, patch: UpstreamPatch, db: Db = getDb(
 	reload(db);
 	const updated = getUpstreamById(id) as UpstreamRecord;
 	events.emit('upstream.changed', { slug: updated.slug, enabled: updated.enabled });
+	audit(
+		'upstream.update',
+		updated.slug,
+		actorId,
+		ip,
+		requestId,
+		{ fields: Object.keys(patch) },
+		db
+	);
 	log.info({ slug: updated.slug }, 'upstream updated');
 	return updated;
 }
 
 /** Enable/disable without dropping configuration (FR-09). */
-export function setUpstreamEnabled(id: string, enabled: boolean, db: Db = getDb()): UpstreamRecord {
+export function setUpstreamEnabled(
+	id: string,
+	enabled: boolean,
+	writer: Db | WriteOptions = {}
+): UpstreamRecord {
+	const { db, actorId, ip, requestId } = writeOptions(writer);
 	const existing = snapshot.upstreamsById.get(id);
 	if (!existing) throw new RegistryError('not_found', 'upstream not found');
 	db.update(upstreams).set({ enabled, updatedAt: nowIso() }).where(eq(upstreams.id, id)).run();
 	reload(db);
 	events.emit('upstream.enabled', { slug: existing.slug, enabled });
+	audit(
+		enabled ? 'upstream.enable' : 'upstream.disable',
+		existing.slug,
+		actorId,
+		ip,
+		requestId,
+		{},
+		db
+	);
 	log.info({ slug: existing.slug, enabled }, 'upstream enabled flag changed');
 	return getUpstreamById(id) as UpstreamRecord;
 }
@@ -258,12 +350,14 @@ export function setUpstreamEnabled(id: string, enabled: boolean, db: Db = getDb(
  * Hard delete. The profile links cascade (schema), and we reload so caches drop
  * it; the pool closes the connection via the `upstream.changed` subscriber.
  */
-export function deleteUpstream(id: string, db: Db = getDb()): void {
+export function deleteUpstream(id: string, writer: Db | WriteOptions = {}): void {
+	const { db, actorId, ip, requestId } = writeOptions(writer);
 	const existing = snapshot.upstreamsById.get(id);
 	if (!existing) throw new RegistryError('not_found', 'upstream not found');
 	db.delete(upstreams).where(eq(upstreams.id, id)).run();
 	reload(db);
 	events.emit('upstream.changed', { slug: existing.slug, enabled: false });
+	audit('upstream.delete', existing.slug, actorId, ip, requestId, {}, db);
 	log.info({ slug: existing.slug }, 'upstream deleted');
 }
 
@@ -276,7 +370,11 @@ export type CreateProfileInput = {
 	links?: ProfileLink[];
 };
 
-export function createProfile(input: CreateProfileInput, db: Db = getDb()): CachedProfile {
+export function createProfile(
+	input: CreateProfileInput,
+	writer: Db | WriteOptions = {}
+): CachedProfile {
+	const { db, actorId, ip, requestId } = writeOptions(writer);
 	const id = uuidv7();
 	const createdAt = nowIso();
 	db.transaction((tx) => {
@@ -305,6 +403,15 @@ export function createProfile(input: CreateProfileInput, db: Db = getDb()): Cach
 	});
 	reload(db);
 	events.emit('profile.changed', { profileId: id });
+	audit(
+		'profile.create',
+		input.name,
+		actorId,
+		ip,
+		requestId,
+		{ links: input.links?.length ?? 0 },
+		db
+	);
 	return getProfile(id) as CachedProfile;
 }
 
@@ -312,8 +419,9 @@ export function createProfile(input: CreateProfileInput, db: Db = getDb()): Cach
 export function setProfileLinks(
 	profileId: string,
 	links: ProfileLink[],
-	db: Db = getDb()
+	writer: Db | WriteOptions = {}
 ): CachedProfile {
+	const { db, actorId, ip, requestId } = writeOptions(writer);
 	if (!snapshot.profilesById.has(profileId))
 		throw new RegistryError('not_found', 'profile not found');
 	const unknown = links.filter((link) => !snapshot.upstreamsById.has(link.upstreamId));
@@ -339,6 +447,15 @@ export function setProfileLinks(
 	});
 	reload(db);
 	events.emit('profile.changed', { profileId });
+	audit(
+		'profile.set_links',
+		profileNameOf(profileId),
+		actorId,
+		ip,
+		requestId,
+		{ links: links.length },
+		db
+	);
 	return getProfile(profileId) as CachedProfile;
 }
 
@@ -367,9 +484,11 @@ function keyExpiresAt(db: Db, keyId: string): string | null {
 }
 
 /** BR-08: a profile in use by an active key cannot be deleted. */
-export function deleteProfile(profileId: string, db: Db = getDb()): void {
+export function deleteProfile(profileId: string, writer: Db | WriteOptions = {}): void {
+	const { db, actorId, ip, requestId } = writeOptions(writer);
 	if (!snapshot.profilesById.has(profileId))
 		throw new RegistryError('not_found', 'profile not found');
+	const profileName = profileNameOf(profileId);
 	const blockers = activeKeysForProfile(profileId, db);
 	const history =
 		db.select({ value: count() }).from(apiKeys).where(eq(apiKeys.profileId, profileId)).all()[0]
@@ -391,6 +510,7 @@ export function deleteProfile(profileId: string, db: Db = getDb()): void {
 	});
 	reload(db);
 	events.emit('profile.changed', { profileId });
+	audit('profile.delete', profileName, actorId, ip, requestId, { discardedKeys: history }, db);
 	log.info({ profileId, discardedKeys: history }, 'profile deleted');
 }
 
@@ -402,8 +522,9 @@ export function updateProfile(
 			'name' | 'rateLimitRpm' | 'dailyCallQuota' | 'maxConcurrency' | 'defaultTimeoutMs'
 		>
 	>,
-	db: Db = getDb()
+	writer: Db | WriteOptions = {}
 ): CachedProfile {
+	const { db, actorId, ip, requestId } = writeOptions(writer);
 	if (!snapshot.profilesById.has(profileId))
 		throw new RegistryError('not_found', 'profile not found');
 	db.update(profiles)
@@ -412,6 +533,15 @@ export function updateProfile(
 		.run();
 	reload(db);
 	events.emit('profile.changed', { profileId });
+	audit(
+		'profile.update',
+		profileNameOf(profileId),
+		actorId,
+		ip,
+		requestId,
+		{ fields: Object.keys(patch) },
+		db
+	);
 	return getProfile(profileId) as CachedProfile;
 }
 

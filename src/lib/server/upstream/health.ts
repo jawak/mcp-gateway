@@ -274,7 +274,10 @@ export function toUpstreamRecord(row: typeof upstreams.$inferSelect): UpstreamRe
 		headersRef: row.headersRef,
 		timeoutMs: row.timeoutMs,
 		pin: row.pin,
-		caps: row.caps ?? null
+		caps: row.caps ?? null,
+		toolsCount: row.toolsCount,
+		lastError: row.lastError,
+		status: (row.status as { state?: string } | null) ?? null
 	};
 }
 

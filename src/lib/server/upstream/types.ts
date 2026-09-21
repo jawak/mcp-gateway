@@ -43,6 +43,12 @@ export type UpstreamRecord = {
 	pin: 'pinned' | 'lazy';
 	/** Capabilities reported by the upstream at handshake time (may be absent). */
 	caps?: Record<string, unknown> | null;
+	/** Tool count from the last successful handshake (denormalised for listing). */
+	toolsCount?: number;
+	/** Newest failure text, so a list page can explain an unconfigured badge. */
+	lastError?: string | null;
+	/** Last probe outcome, e.g. `{ state: 'down', checkedAt, error }`. */
+	status?: { state?: string; checkedAt?: string; error?: string } | null;
 };
 
 export type UpstreamStatusKind = 'healthy' | 'degraded' | 'down' | 'unconfigured';

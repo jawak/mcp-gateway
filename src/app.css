@@ -1,1 +1,37 @@
 @import 'tailwindcss';
+
+/* Tailwind v4 has no default dark class strategy; declare one so a `dark` class on
+   <html> drives the palette and the choice can be persisted across reloads. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+	/* Health states are the vocabulary of this console: one colour per state, used
+	   by badges, dots and charts so a colour always means the same thing. */
+	--color-healthy: oklch(0.72 0.17 152);
+	--color-degraded: oklch(0.8 0.15 85);
+	--color-down: oklch(0.63 0.2 25);
+	--color-unconfigured: oklch(0.68 0.02 260);
+}
+
+html {
+	color-scheme: light dark;
+}
+
+body {
+	@apply bg-zinc-50 text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100;
+}
+
+/* Keyboard focus must stay visible everywhere: the console is operated from the
+   keyboard by people who install MCP servers for a living. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+	@apply outline-2 outline-offset-2 outline-zinc-900 dark:outline-zinc-100;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		transition-duration: 0.01ms !important;
+	}
+}

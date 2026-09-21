@@ -3,7 +3,23 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
-		<meta name="text-scale" content="scale" />
+		<link rel="icon" href="%sveltekit.assets%/favicon.png" />
+		<script nonce="%sveltekit.nonce%">
+			// Applied before first paint so switching themes never flashes. The CSP
+			// requires the nonce placeholder here: an inline script without it is
+			// blocked, and the page would just render in the OS default theme.
+			(() => {
+				try {
+					const stored = localStorage.getItem('mcpgw-theme');
+					const dark = stored
+						? stored === 'dark'
+						: matchMedia('(prefers-color-scheme: dark)').matches;
+					document.documentElement.classList.toggle('dark', dark);
+				} catch {
+					/* storage unavailable (private mode): fall back to the media query */
+				}
+			})();
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
