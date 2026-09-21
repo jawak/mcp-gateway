@@ -38,9 +38,15 @@
 
 ### T-02: Custom server Bun + router `/mcp` `/metrics` `/healthz`
 - **Deskripsi:** Buat `src/entrypoints/server.ts` (Bun.serve → `handleFetch`) dan `src/handle.ts` sebagai router: `/mcp` → stub handler `501` (diisi T-18), `/metrics` → stub, `/healthz` → JSON `{ ok, version, upstreams, sessions }`, sisanya → SvelteKit handler dari adapter-node. Graceful shutdown (drain 30s), `maxBodySize: 1_048_576`, `MCPGW_TRUST_PROXY` → IP dari `X-Forwarded-For` 1 hop. Script `start` yang resolve build output adapter-node.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-01 · **Estimasi:** 5h
-- **File:** `src/entrypoints/server.ts`, `src/handle.ts`, `scripts/start.ts`, `.env.example`
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-01 · **Estimasi:** 5h
+- **File:** `src/entrypoints/server.ts`, `src/entrypoints/worker.ts`, `src/handle.ts`, `src/lib/server/http/{bridge,static}.ts`, `src/lib/server/{runtime,registry/events}.ts`, `src/lib/server/observability/{logger,status}.ts`, `scripts/build-server.ts`, `tests/unit/*`
 - **Acceptance:** `bun run build && bun run start` → `GET /healthz` 200 JSON, `GET /` 200 HTML, `POST /mcp` 501, 404 untuk rute lain.
+- **Catatan implementasi (2026-09-21):**
+  - **Koreksi arsitektur Tech Spec:** `Bun.serve` tidak bisa digabung dengan handler `node:http` (`Bun.server()` tidak ada di Bun 1.4). Entry production = `node:http` (dijalankan Bun) + bridge web⇄node sendiri (`http/bridge.ts`) → `/mcp` tetap pakai `Request`/`Response` (prasyarat `WebStandardStreamableHTTPServerTransport` di T-12), SvelteKit tetap satu origin.
+  - **Koreksi API:** SvelteKit 2.70 `Server` tidak punya `.render()` — yang benar **`.respond(request, { getClientAddress })`**; `@sveltejs/kit/manifest` bukan export publik → `Server` + `manifest.js` di-resolve runtime dari `.svelte-kit/output/server/` (maka runtime butuh folder itu, dicatat untuk Docker T-43).
+  - Static `build/client` dilayani `Bun.file` (immutable untuk `/_app/immutable/*`, ETag+304, guard traversal).
+  - tsconfig menambah `"types": ["bun","node","vite/client"]`; versi diambil dari import JSON (di-inline bundler, tanpa baca file saat runtime).
+  - Gate: check 0 error · lint pass · 16 test pass · build pass. Smoke: `/healthz` 200, `/` 200 SSR, `/nope` 404, `POST /mcp` 503 `not_mounted`, `PUT /mcp` 405 + allow, `/metrics` 501, body > limit → 413, ETag → 304, SIGTERM → exited bersih. Commit `11b4449`.
 
 ### T-03: Config loader + logger
 - **Deskripsi:** `lib/server/config.ts` memuat + validasi env dengan Zod (semua var di Tech Spec Bagian 5, termasuk default), fail-fast dengan pesan jelas; `observability/logger.ts` (pino, pretty di dev, redaction hook dari T-04); `version` dari `package.json`; `registry/events.ts` — event bus in-memory bertipe (publish/subscribe + `close()`) yang dipakai lintas modul (`upstream.changed`, `profile.changed`, `health.changed`, `key.revoked`).
@@ -377,3 +383,4 @@ Release : T-42 → T-43 → T-44   |   V1.1: T-45 (T-32,T-38), T-46 (T-40,T-43) 
 | 2026-09-21 | Draft awal: 48 task dari Tech Spec v1.0 (V1.0 = T-01…T-44, V1.1 = T-45…T-46, backlog v2 = T-47…T-48) |
 | 2026-09-21 | Event bus dipindah ke T-03; T-23/T-24 ditukar agar dependensi terurut topologis; jalur kritis & matriks dependensi dikoreksi; total jam V1.0 = 229 |
 | 2026-09-21 | ✅ T-01 selesai (commit `cba6a7e`) — semua gate hijau; catatan penting: `svelte.config.js` tidak dibuat oleh sv 0.17, adapter di `vite.config.ts` |
+| 2026-09-21 | ✅ T-02 selesai (commit `11b4449`) — **Tech Spec dikoreksi**: `Bun.serve` ≠ kompatibel handler `node:http` (pakai node:http + bridge), dan SvelteKit pakai `Server.respond()` bukan `.render()` |
