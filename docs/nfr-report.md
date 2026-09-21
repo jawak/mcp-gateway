@@ -15,13 +15,13 @@ bun run scripts/loadtest.ts --base-url http://localhost:8080 --sessions 200 --bu
 
 ## Latency and throughput
 
-| Measurement | Target (PRD) | Measured | Verdict |
-| --- | --- | --- | --- |
-| `tools/list`, cache hit | p95 ≤ 100 ms | p50 1.4 ms / p95 5.1 ms | pass |
-| Added latency, `tools/call` (gateway − direct to the same server) | p50 ≤ 100 ms, p95 ≤ 300 ms | p50 0.9 ms / p95 3.1 ms | pass |
-| `tools/list` with 200 concurrent sessions | p95 ≤ 100 ms | p95 37.7 / 49.8 / 73.1 ms over 3 runs | pass |
-| Session establishment | — | 200 sessions in ~345 ms (≈ 580/s) | informational |
-| Loadtest process RSS | — | ~97 MB | informational |
+| Measurement                                                       | Target (PRD)               | Measured                              | Verdict       |
+| ----------------------------------------------------------------- | -------------------------- | ------------------------------------- | ------------- |
+| `tools/list`, cache hit                                           | p95 ≤ 100 ms               | p50 1.4 ms / p95 5.1 ms               | pass          |
+| Added latency, `tools/call` (gateway − direct to the same server) | p50 ≤ 100 ms, p95 ≤ 300 ms | p50 0.9 ms / p95 3.1 ms               | pass          |
+| `tools/list` with 200 concurrent sessions                         | p95 ≤ 100 ms               | p95 37.7 / 49.8 / 73.1 ms over 3 runs | pass          |
+| Session establishment                                             | —                          | 200 sessions in ~345 ms (≈ 580/s)     | informational |
+| Loadtest process RSS                                              | —                          | ~97 MB                                | informational |
 
 Added latency is measured as a **difference** against the same upstream reached
 directly over Streamable HTTP, so upstream execution time is not credited to the
@@ -61,24 +61,24 @@ Both were real, neither was visible to the 480-odd unit/integration tests.
 
 ## Security checklist
 
-| Item | Requirement | Status | Evidence |
-| --- | --- | --- | --- |
-| API key storage | hash only, shown once | done | `tests/integration/apikey-lifecycle.test.ts` asserts the plaintext is absent from the DB and from a later page read; smoke test confirms one-time display |
-| Revocation latency | seconds, not idle timeout | done | smoke: live session → revoke → next request `401 revoked` |
-| Password storage | argon2id | done | `tests/unit/vault.test.ts`, login tests assert hash shape |
-| Enumeration resistance | same message and timing | done | dummy-hash verify on unknown accounts; test compares both message and time ratio |
-| IP backoff | 10 bad guesses/min → cooldown, per address | done | `tests/integration/auth-mcp.test.ts` |
-| Secrets at rest | AES-256-GCM, never returned | done | `tests/unit/vault.test.ts`; API surface only ever lists names |
-| No child-process secret leak | allowlisted env | done | `tests/integration/gateway-e2e.test.ts` proves `MCPGW_MASTER_KEY` is invisible to the spawned child |
-| Manifest cannot carry tokens | reject inlined credentials | done | `tests/integration/manifest.test.ts` (import rejected, nothing written) + smoke asserts the export has no credential shapes |
-| SSRF guard | https, private ranges, metadata IP, no redirects | done | `tests/unit/ssrf.test.ts`, `tests/integration/remote-upstream.test.ts` |
-| CSRF | origin check on form actions | done | smoke: cross-origin form action → `403` |
-| RBAC | viewer cannot mutate | done | `tests/unit/rbac.test.ts` policy matrix + hook tests |
-| Admin lockout | 5 failures → 15 min | done | `tests/integration/login.test.ts` |
-| Audit trail | append-only, covering config writes | done | `tests/integration/audit.test.ts`; no update/delete path exists in the module |
-| Header hygiene | CSP, nosniff, DENY, referrer, permissions | done | `tests/unit/rbac.test.ts` |
-| Non-root container | — | done | `deploy/Dockerfile` creates and switches to `mcpgw` |
-| Metrics not public | token required, closed when unset | done | smoke: `/metrics` 404 without a configured token |
+| Item                         | Requirement                                      | Status | Evidence                                                                                                                                                  |
+| ---------------------------- | ------------------------------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| API key storage              | hash only, shown once                            | done   | `tests/integration/apikey-lifecycle.test.ts` asserts the plaintext is absent from the DB and from a later page read; smoke test confirms one-time display |
+| Revocation latency           | seconds, not idle timeout                        | done   | smoke: live session → revoke → next request `401 revoked`                                                                                                 |
+| Password storage             | argon2id                                         | done   | `tests/unit/vault.test.ts`, login tests assert hash shape                                                                                                 |
+| Enumeration resistance       | same message and timing                          | done   | dummy-hash verify on unknown accounts; test compares both message and time ratio                                                                          |
+| IP backoff                   | 10 bad guesses/min → cooldown, per address       | done   | `tests/integration/auth-mcp.test.ts`                                                                                                                      |
+| Secrets at rest              | AES-256-GCM, never returned                      | done   | `tests/unit/vault.test.ts`; API surface only ever lists names                                                                                             |
+| No child-process secret leak | allowlisted env                                  | done   | `tests/integration/gateway-e2e.test.ts` proves `MCPGW_MASTER_KEY` is invisible to the spawned child                                                       |
+| Manifest cannot carry tokens | reject inlined credentials                       | done   | `tests/integration/manifest.test.ts` (import rejected, nothing written) + smoke asserts the export has no credential shapes                               |
+| SSRF guard                   | https, private ranges, metadata IP, no redirects | done   | `tests/unit/ssrf.test.ts`, `tests/integration/remote-upstream.test.ts`                                                                                    |
+| CSRF                         | origin check on form actions                     | done   | smoke: cross-origin form action → `403`                                                                                                                   |
+| RBAC                         | viewer cannot mutate                             | done   | `tests/unit/rbac.test.ts` policy matrix + hook tests                                                                                                      |
+| Admin lockout                | 5 failures → 15 min                              | done   | `tests/integration/login.test.ts`                                                                                                                         |
+| Audit trail                  | append-only, covering config writes              | done   | `tests/integration/audit.test.ts`; no update/delete path exists in the module                                                                             |
+| Header hygiene               | CSP, nosniff, DENY, referrer, permissions        | done   | `tests/unit/rbac.test.ts`                                                                                                                                 |
+| Non-root container           | —                                                | done   | `deploy/Dockerfile` creates and switches to `mcpgw`                                                                                                       |
+| Metrics not public           | token required, closed when unset                | done   | smoke: `/metrics` 404 without a configured token                                                                                                          |
 
 ## Known gaps (accepted for V1.0)
 

@@ -88,7 +88,16 @@ async function main(): Promise<void> {
 	const denied = await fetch(`${base}/mcp`, {
 		method: 'POST',
 		headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
-		body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'smoke', version: '1' } } })
+		body: JSON.stringify({
+			jsonrpc: '2.0',
+			id: 1,
+			method: 'initialize',
+			params: {
+				protocolVersion: '2025-06-18',
+				capabilities: {},
+				clientInfo: { name: 'smoke', version: '1' }
+			}
+		})
 	});
 	check('/mcp without a key is 401', denied.status === 401, `got ${denied.status}`);
 
@@ -103,33 +112,71 @@ async function main(): Promise<void> {
 
 	// 4. login
 	const login = await browser('/login?/login', form({ email, password, next: '/admin' }));
-	check('login succeeds', login.status === 303 && (login.headers.get('location') ?? '') === '/admin', `${login.status}`);
+	check(
+		'login succeeds',
+		login.status === 303 && (login.headers.get('location') ?? '') === '/admin',
+		`${login.status}`
+	);
 	cookies.absorb(login);
 
 	const authenticated = await browser('/admin');
-	check('dashboard renders for a signed-in admin', authenticated.status === 200, `got ${authenticated.status}`);
+	check(
+		'dashboard renders for a signed-in admin',
+		authenticated.status === 200,
+		`got ${authenticated.status}`
+	);
 
 	// 5. create an upstream that is a real MCP server, and let the handshake prove it
 	const created = await browser(
 		'/admin/upstreams/new?/create',
-		form({ slug, name: 'Smoke upstream', transport: 'stdio', command: process.execPath, args: fixture, pin: 'pinned', timeoutMs: '30000', allowAnyIp: 'on' })
+		form({
+			slug,
+			name: 'Smoke upstream',
+			transport: 'stdio',
+			command: process.execPath,
+			args: fixture,
+			pin: 'pinned',
+			timeoutMs: '30000',
+			allowAnyIp: 'on'
+		})
 	);
 	const createdLocation = created.headers.get('location') ?? '';
-	check('upstream created and probed healthy', createdLocation.includes('healthy=1'), `${created.status} ${createdLocation}`);
+	check(
+		'upstream created and probed healthy',
+		createdLocation.includes('healthy=1'),
+		`${created.status} ${createdLocation}`
+	);
 
 	// 6. profile + key
 	const profileName = `smoke-${slug}`;
 	const profileCreated = await browser(
 		'/admin/profiles?/create',
-		form({ name: profileName, upstream: slug, rateLimitRpm: '120', dailyCallQuota: '1000', maxConcurrency: '5' })
+		form({
+			name: profileName,
+			upstream: slug,
+			rateLimitRpm: '120',
+			dailyCallQuota: '1000',
+			maxConcurrency: '5'
+		})
 	);
 	const profileId = (profileCreated.headers.get('location') ?? '').split('/').pop() ?? '';
-	check('profile created', profileCreated.status === 303 && profileId.length > 10, `${profileCreated.status}`);
+	check(
+		'profile created',
+		profileCreated.status === 303 && profileId.length > 10,
+		`${profileCreated.status}`
+	);
 
-	const keyCreated = await browser('/admin/keys/new', form({ name: 'smoke-key', profileId, validityDays: '1', allowAnyIp: 'on' }));
+	const keyCreated = await browser(
+		'/admin/keys/new',
+		form({ name: 'smoke-key', profileId, validityDays: '1', allowAnyIp: 'on' })
+	);
 	const keyHtml = await keyCreated.text();
 	const apiKey = /mcpgw_[A-Za-z0-9]{30,}/.exec(keyHtml)?.[0] ?? '';
-	check('API key issued and shown once', apiKey.startsWith('mcpgw_'), 'no key found in the response');
+	check(
+		'API key issued and shown once',
+		apiKey.startsWith('mcpgw_'),
+		'no key found in the response'
+	);
 
 	// 7. the key works with a real MCP client, namespaced, and reaches the upstream
 	const client = new Client({ name: 'smoke-client', version: '1.0.0' }, { capabilities: {} });
@@ -144,9 +191,14 @@ async function main(): Promise<void> {
 	check(
 		'tools are namespaced by upstream',
 		tools.length > 0 && tools.every((tool) => tool.name.startsWith(`${slug}__`)),
-		tools.map((tool) => tool.name).slice(0, 3).join(', ')
+		tools
+			.map((tool) => tool.name)
+			.slice(0, 3)
+			.join(', ')
 	);
-	const metaOk = tools.every((tool) => (tool as { _meta?: Record<string, unknown> })._meta?.['mcp-gateway'] !== undefined);
+	const metaOk = tools.every(
+		(tool) => (tool as { _meta?: Record<string, unknown> })._meta?.['mcp-gateway'] !== undefined
+	);
 	check('tools carry provenance in _meta', metaOk);
 
 	const echo = tools.find((tool) => tool.name === `${slug}__echo`);
@@ -154,7 +206,11 @@ async function main(): Promise<void> {
 	if (echo) {
 		const called = await client.callTool({ name: echo.name, arguments: { text: 'smoke' } });
 		const text = JSON.stringify(called.content ?? '');
-		check('tool call reaches the upstream and returns its answer', text.includes('echo:smoke'), text.slice(0, 120));
+		check(
+			'tool call reaches the upstream and returns its answer',
+			text.includes('echo:smoke'),
+			text.slice(0, 120)
+		);
 	}
 
 	// 8. a denied tool is neither listed nor callable
@@ -178,34 +234,66 @@ async function main(): Promise<void> {
 			},
 			body: JSON.stringify({ jsonrpc: '2.0', id: 99, method: 'tools/list' })
 		});
-		check('revoked key is rejected on the next request', after.status === 401, `got ${after.status}`);
+		check(
+			'revoked key is rejected on the next request',
+			after.status === 401,
+			`got ${after.status}`
+		);
 	}
 	await client.close().catch(() => undefined);
 
 	// 10. the call log recorded what happened
 	const logs = await (await browser('/admin/logs')).text();
-	check('call log shows the tool call', logs.includes(`${slug}__echo`), 'not found in the log page');
+	check(
+		'call log shows the tool call',
+		logs.includes(`${slug}__echo`),
+		'not found in the log page'
+	);
 
 	// 11. operational surfaces
 	const manifest = await browser('/manifest');
 	const manifestText = await manifest.text();
-	check('manifest export works', manifest.status === 200 && manifestText.includes(slug), `status ${manifest.status}`);
-	check('manifest contains no inlined credentials', !/ghp_|github_pat_|xox[bap]-/.test(manifestText));
+	check(
+		'manifest export works',
+		manifest.status === 200 && manifestText.includes(slug),
+		`status ${manifest.status}`
+	);
+	check(
+		'manifest contains no inlined credentials',
+		!/ghp_|github_pat_|xox[bap]-/.test(manifestText)
+	);
 
 	if (metricsToken) {
-		const metrics = await fetch(`${base}/metrics`, { headers: { authorization: `Bearer ${metricsToken}` } });
+		const metrics = await fetch(`${base}/metrics`, {
+			headers: { authorization: `Bearer ${metricsToken}` }
+		});
 		const body = await metrics.text();
-		check('metrics expose tool counters', metrics.status === 200 && body.includes('mcp_tool_calls_total'), `status ${metrics.status}`);
-		check('metrics are labelled by tool', body.includes(`tool="${slug}__echo"`) || body.includes('mcp_tool_call_duration_seconds'));
+		check(
+			'metrics expose tool counters',
+			metrics.status === 200 && body.includes('mcp_tool_calls_total'),
+			`status ${metrics.status}`
+		);
+		check(
+			'metrics are labelled by tool',
+			body.includes(`tool="${slug}__echo"`) || body.includes('mcp_tool_call_duration_seconds')
+		);
 	} else {
 		const metrics = await fetch(`${base}/metrics`);
-		check('metrics are closed when no token is configured', metrics.status === 404, `got ${metrics.status}`);
+		check(
+			'metrics are closed when no token is configured',
+			metrics.status === 404,
+			`got ${metrics.status}`
+		);
 	}
 
 	// 12. CSRF: a foreign origin must not be able to drive a form action
 	const csrf = await fetch(`${base}/login?/login`, {
 		method: 'POST',
-		headers: { origin: 'https://evil.example', 'content-type': 'application/x-www-form-urlencoded', cookie: cookies.header() },
+		headers: {
+			origin: 'https://evil.example',
+			'content-type': 'application/x-www-form-urlencoded',
+			cookie: cookies.header()
+		},
 		body: new URLSearchParams({ email, password }).toString()
 	});
 	check('cross-origin form action is refused', csrf.status === 403, `got ${csrf.status}`);

@@ -23,18 +23,18 @@ bun run db:migrate        # create ./data/mcpgw.db + bootstrap admin
 bun run dev               # dashboard + /mcp at http://localhost:5173
 ```
 
-| Script                                            | Purpose                                                            |
-| ------------------------------------------------- | ------------------------------------------------------------------ |
-| `bun run dev`                                     | Vite dev server (dashboard **and** `/mcp`, `/metrics`, `/healthz`) |
-| `bun run build` / `bun run start`                 | Production build and Bun server                                    |
-| `bun run worker`                                  | Health sweep, session GC, retention, daily snapshot                |
-| `bun run verify`                                  | check + lint + test + build (the CI gate)                          |
-| `bun run check`                                   | `svelte-kit sync` + `svelte-check`                                 |
-| `bun run lint` / `bun run format`                 | ESLint + Prettier                                                  |
-| `bun run test` / `test:unit` / `test:integration` | `bun:test`                                                         |
+| Script                                             | Purpose                                                            |
+| -------------------------------------------------- | ------------------------------------------------------------------ |
+| `bun run dev`                                      | Vite dev server (dashboard **and** `/mcp`, `/metrics`, `/healthz`) |
+| `bun run build` / `bun run start`                  | Production build and Bun server                                    |
+| `bun run worker`                                   | Health sweep, session GC, retention, daily snapshot                |
+| `bun run verify`                                   | check + lint + test + build (the CI gate)                          |
+| `bun run check`                                    | `svelte-kit sync` + `svelte-check`                                 |
+| `bun run lint` / `bun run format`                  | ESLint + Prettier                                                  |
+| `bun run test` / `test:unit` / `test:integration`  | `bun:test`                                                         |
 | `bun run db:generate` / `db:migrate` / `db:studio` | Drizzle Kit                                                        |
-| `bun run smoke`                                   | Drives a running instance end to end with a real MCP client        |
-| `bun run loadtest`                                | Added-latency, concurrency and rate-limit measurement              |
+| `bun run smoke`                                    | Drives a running instance end to end with a real MCP client        |
+| `bun run loadtest`                                 | Added-latency, concurrency and rate-limit measurement              |
 
 `smoke` and `loadtest` talk to a built, running server:
 
@@ -61,13 +61,13 @@ The dashboard issues a key and shows copy-paste config for each client. The gene
 ```jsonc
 // opencode.json / Cursor's .cursor/mcp.json — any Streamable HTTP client
 {
-  "mcp": {
-    "gateway": {
-      "type": "http",
-      "url": "https://mcp.example.com/mcp",
-      "headers": { "Authorization": "Bearer mcpgw_<your-key>" }
-    }
-  }
+	"mcp": {
+		"gateway": {
+			"type": "http",
+			"url": "https://mcp.example.com/mcp",
+			"headers": { "Authorization": "Bearer mcpgw_<your-key>" }
+		}
+	}
 }
 ```
 

@@ -11,8 +11,18 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 export type Console = {
 	base: string;
 	signIn: () => Promise<void>;
-	createUpstream: (input: { slug: string; name: string; command: string; args: string }) => Promise<{ ok: boolean; location: string }>;
-	createProfile: (input: { name: string; slug: string; rateLimitRpm?: number; dailyCallQuota?: number }) => Promise<string>;
+	createUpstream: (input: {
+		slug: string;
+		name: string;
+		command: string;
+		args: string;
+	}) => Promise<{ ok: boolean; location: string }>;
+	createProfile: (input: {
+		name: string;
+		slug: string;
+		rateLimitRpm?: number;
+		dailyCallQuota?: number;
+	}) => Promise<string>;
 	createKey: (input: { name: string; profileId: string }) => Promise<string>;
 	mcpClient: (apiKey: string) => Promise<{ client: Client; close: () => Promise<void> }>;
 	get: (path: string) => Promise<{ status: number; body: string }>;
@@ -66,7 +76,10 @@ export function createConsole(options: { base: string; email: string; password: 
 		cookieHeader: () => cookies.header(),
 
 		async signIn() {
-			const response = await browser('/login?/login', form({ email: options.email, password: options.password, next: '/admin' }));
+			const response = await browser(
+				'/login?/login',
+				form({ email: options.email, password: options.password, next: '/admin' })
+			);
 			if (response.status !== 303) throw new Error(`sign-in failed with ${response.status}`);
 			signedIn = true;
 		},
@@ -85,7 +98,10 @@ export function createConsole(options: { base: string; email: string; password: 
 					allowAnyIp: 'on'
 				})
 			);
-			return { ok: (response.headers.get('location') ?? '').includes('healthy=1'), location: response.headers.get('location') ?? '' };
+			return {
+				ok: (response.headers.get('location') ?? '').includes('healthy=1'),
+				location: response.headers.get('location') ?? ''
+			};
 		},
 
 		async createProfile({ name, slug, rateLimitRpm = 120, dailyCallQuota = 1000 }) {
@@ -103,7 +119,10 @@ export function createConsole(options: { base: string; email: string; password: 
 		},
 
 		async createKey({ name, profileId }) {
-			const response = await browser('/admin/keys/new', form({ name, profileId, validityDays: '1', allowAnyIp: 'on' }));
+			const response = await browser(
+				'/admin/keys/new',
+				form({ name, profileId, validityDays: '1', allowAnyIp: 'on' })
+			);
 			const html = await response.text();
 			return /mcpgw_[A-Za-z0-9]{30,}/.exec(html)?.[0] ?? '';
 		},

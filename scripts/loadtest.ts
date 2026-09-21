@@ -40,14 +40,17 @@ function percentile(sorted: number[], fraction: number): number {
 	return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))] ?? 0;
 }
 
-function report(label: string, samples: number[], target?: { p50?: number; p95?: number }): boolean {
+function report(
+	label: string,
+	samples: number[],
+	target?: { p50?: number; p95?: number }
+): boolean {
 	const sorted = [...samples].sort((a, b) => a - b);
 	const p50 = percentile(sorted, 0.5);
 	const p95 = percentile(sorted, 0.95);
 	const p99 = percentile(sorted, 0.99);
 	const within =
-		target === undefined ||
-		((target.p50 ?? Infinity) >= p50 && (target.p95 ?? Infinity) >= p95);
+		target === undefined || ((target.p50 ?? Infinity) >= p50 && (target.p95 ?? Infinity) >= p95);
 	const note = target === undefined ? '' : within ? '  ✓ within target' : '  ✗ OVER TARGET';
 	console.log(
 		`  ${label.padEnd(36)} p50 ${p50.toFixed(1)}  p95 ${p95.toFixed(1)}  p99 ${p99.toFixed(1)} ms  n=${samples.length}${note}`
@@ -59,7 +62,12 @@ async function main(): Promise<void> {
 	console.log(`loadtest: ${base} (sessions=${sessions}, burst=${burst})`);
 	const console_ = createConsole({ base, email, password });
 	await console_.signIn();
-	const created = await console_.createUpstream({ slug, name: 'Load host', command: process.execPath, args: fixture });
+	const created = await console_.createUpstream({
+		slug,
+		name: 'Load host',
+		command: process.execPath,
+		args: fixture
+	});
 	if (!created.ok) throw new Error(`upstream not healthy: ${created.location}`);
 	// Two profiles on purpose: the load key needs headroom so the measurement is of
 	// the gateway, not of its own limiter; the throttle key stays deliberately small
@@ -93,7 +101,9 @@ async function main(): Promise<void> {
 	const direct = new Client({ name: 'direct', version: '1.0.0' }, { capabilities: {} });
 	await direct.connect(new StreamableHTTPClientTransport(new URL(fixtureServer.url)));
 
-	const echo = (await primary.client.listTools()).tools.find((tool) => tool.name.endsWith('__echo'));
+	const echo = (await primary.client.listTools()).tools.find((tool) =>
+		tool.name.endsWith('__echo')
+	);
 	if (!echo) throw new Error('fixture echo tool missing');
 
 	const gateway: number[] = [];
@@ -137,7 +147,12 @@ async function main(): Promise<void> {
 	await Promise.all(pool.map((session) => session.close()));
 
 	// 4. burst against the rate limiter, on a key whose profile is deliberately tight
-	const tightProfileId = await console_.createProfile({ name: `throttle-${slug}`, slug, rateLimitRpm: 30, dailyCallQuota: 100_000 });
+	const tightProfileId = await console_.createProfile({
+		name: `throttle-${slug}`,
+		slug,
+		rateLimitRpm: 30,
+		dailyCallQuota: 100_000
+	});
 	const tightKey = await console_.createKey({ name: 'throttle-key', profileId: tightProfileId });
 	if (!tightKey) throw new Error('no throttle key returned');
 	const statuses = await Promise.all(
@@ -160,9 +175,12 @@ async function main(): Promise<void> {
 		tally[String(status)] = (tally[String(status)] ?? 0) + 1;
 		return tally;
 	}, {});
-	console.log(`  ${`burst of ${burst} requests`.padEnd(36)} ${new URLSearchParams(histogram).toString().replace(/&/g, ' ')}`);
+	console.log(
+		`  ${`burst of ${burst} requests`.padEnd(36)} ${new URLSearchParams(histogram).toString().replace(/&/g, ' ')}`
+	);
 	results.push(limited > 0 && authErrors === 0);
-	if (limited === 0) console.log('  ✗ rate limiter never triggered — raise --burst or lower the profile limit');
+	if (limited === 0)
+		console.log('  ✗ rate limiter never triggered — raise --burst or lower the profile limit');
 
 	const rss = process.memoryUsage().rss / 1_048_576;
 	console.log(`  ${'loadtest RSS'.padEnd(36)} ${rss.toFixed(0)} MB (gateway RSS: see /metrics)`);

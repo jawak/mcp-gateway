@@ -50,14 +50,26 @@ beforeEach(() => {
 describe('key states map to statuses', () => {
 	test('missing and malformed credentials are 401', async () => {
 		const authenticate = authenticator();
-		expect((await authenticate(request(), { requestId: 'r', clientAddress: '1.1.1.1' }) as { response: Response }).response.status).toBe(401);
-		const bad = await authenticate(request('Bearer nope'), { requestId: 'r', clientAddress: '1.1.1.2' });
+		expect(
+			(
+				(await authenticate(request(), { requestId: 'r', clientAddress: '1.1.1.1' })) as {
+					response: Response;
+				}
+			).response.status
+		).toBe(401);
+		const bad = await authenticate(request('Bearer nope'), {
+			requestId: 'r',
+			clientAddress: '1.1.1.2'
+		});
 		expect((bad as { response: Response }).response.status).toBe(401);
 	});
 
 	test('a valid key passes through with caller metadata', async () => {
 		const { plaintext, key } = seedKey();
-		const result = await authenticator()(request(`Bearer ${plaintext}`), { requestId: 'r1', clientAddress: '2.2.2.2' });
+		const result = await authenticator()(request(`Bearer ${plaintext}`), {
+			requestId: 'r1',
+			clientAddress: '2.2.2.2'
+		});
 		const caller = result as { apiKeyId: string; profileId: string; requestId: string };
 		expect(caller.apiKeyId).toBe(key.id);
 		expect(caller.profileId).toBe(key.profileId);
@@ -68,28 +80,43 @@ describe('key states map to statuses', () => {
 		const { revokeApiKey, suspendApiKey } = await import('../../src/lib/server/governance/apikey');
 		const a = seedKey();
 		revokeApiKey(a.key.id);
-		const revoked = await authenticator()(request(`Bearer ${a.plaintext}`), { requestId: 'r', clientAddress: '3.3.3.1' });
+		const revoked = await authenticator()(request(`Bearer ${a.plaintext}`), {
+			requestId: 'r',
+			clientAddress: '3.3.3.1'
+		});
 		expect((revoked as { response: Response }).response.status).toBe(401);
 
 		const b = seedKey();
 		suspendApiKey(b.key.id);
-		const suspended = await authenticator()(request(`Bearer ${b.plaintext}`), { requestId: 'r', clientAddress: '3.3.3.2' });
+		const suspended = await authenticator()(request(`Bearer ${b.plaintext}`), {
+			requestId: 'r',
+			clientAddress: '3.3.3.2'
+		});
 		expect((suspended as { response: Response }).response.status).toBe(403);
 	});
 
 	test('an expired key is 401', async () => {
 		const profile = createProfile({ name: `exp-${uuidv7().slice(-8)}`, links: [] });
 		const issued = createApiKey({ name: 'exp', profileId: profile.id, expiresAt: isoInThePast() });
-		const result = await authenticator()(request(`Bearer ${issued.plaintext}`), { requestId: 'r', clientAddress: '3.3.4.1' });
+		const result = await authenticator()(request(`Bearer ${issued.plaintext}`), {
+			requestId: 'r',
+			clientAddress: '3.3.4.1'
+		});
 		expect((result as { response: Response }).response.status).toBe(401);
 	});
 
 	test('an IP allowlist refusal is 403, and a listed address passes', async () => {
 		const profile = createProfile({ name: `ip-${uuidv7().slice(-8)}`, links: [] });
 		const issued = createApiKey({ name: 'ip', profileId: profile.id, ipAllowlist: ['10.0.0.0/8'] });
-		const blocked = await authenticator()(request(`Bearer ${issued.plaintext}`), { requestId: 'r', clientAddress: '203.0.113.9' });
+		const blocked = await authenticator()(request(`Bearer ${issued.plaintext}`), {
+			requestId: 'r',
+			clientAddress: '203.0.113.9'
+		});
 		expect((blocked as { response: Response }).response.status).toBe(403);
-		const allowed = await authenticator()(request(`Bearer ${issued.plaintext}`), { requestId: 'r', clientAddress: '10.1.2.3' });
+		const allowed = await authenticator()(request(`Bearer ${issued.plaintext}`), {
+			requestId: 'r',
+			clientAddress: '10.1.2.3'
+		});
 		expect((allowed as { apiKeyId?: string }).apiKeyId).toBe(issued.key.id);
 	});
 });
@@ -100,7 +127,9 @@ describe('cache staleness must not look like a bad key', () => {
 		// two-bundle case (dashboard writes, entrypoint authenticates)
 		const db = getDb();
 		const profileId = uuidv7();
-		db.insert(profiles).values({ id: profileId, name: `cross-${uuidv7().slice(-8)}` }).run();
+		db.insert(profiles)
+			.values({ id: profileId, name: `cross-${uuidv7().slice(-8)}` })
+			.run();
 		const { generatePlaintextKey } = await import('../../src/lib/server/governance/apikey');
 		const plaintext = generatePlaintextKey();
 		const { apiKeys } = await import('../../src/lib/server/db/schema.ts');
@@ -116,7 +145,10 @@ describe('cache staleness must not look like a bad key', () => {
 			.run();
 		// deliberately do NOT reload(): the cache in this process has never seen it
 
-		const result = await authenticator()(request(`Bearer ${plaintext}`), { requestId: 'r', clientAddress: '4.4.4.1' });
+		const result = await authenticator()(request(`Bearer ${plaintext}`), {
+			requestId: 'r',
+			clientAddress: '4.4.4.1'
+		});
 		expect((result as { apiKeyId?: string }).apiKeyId).toBeDefined();
 	});
 });
@@ -150,7 +182,10 @@ describe('per-IP guess backoff', () => {
 			});
 		}
 		const { plaintext } = seedKey();
-		const other = await authenticate(request(`Bearer ${plaintext}`), { requestId: 'r', clientAddress: '7.7.7.7' });
+		const other = await authenticate(request(`Bearer ${plaintext}`), {
+			requestId: 'r',
+			clientAddress: '7.7.7.7'
+		});
 		expect((other as { apiKeyId?: string }).apiKeyId).toBeDefined();
 	});
 
@@ -161,7 +196,10 @@ describe('per-IP guess backoff', () => {
 		for (let index = 0; index < 12; index += 1) {
 			const issued = seedKey(`burn-${index}-${uuidv7().slice(-6)}`);
 			revokeApiKey(issued.key.id);
-			const result = await authenticate(request(`Bearer ${issued.plaintext}`), { requestId: 'r', clientAddress: address });
+			const result = await authenticate(request(`Bearer ${issued.plaintext}`), {
+				requestId: 'r',
+				clientAddress: address
+			});
 			expect((result as { response: Response }).response.status).toBe(401);
 		}
 		// a genuinely bad guess afterwards must still be a 401, not a locked 429
@@ -180,7 +218,10 @@ describe('budgets and origin', () => {
 		const authenticate = authenticator();
 		const statuses: number[] = [];
 		for (let index = 0; index < 8; index += 1) {
-			const result = await authenticate(request(`Bearer ${issued.plaintext}`), { requestId: 'r', clientAddress: '5.5.5.5' });
+			const result = await authenticate(request(`Bearer ${issued.plaintext}`), {
+				requestId: 'r',
+				clientAddress: '5.5.5.5'
+			});
 			const response = (result as { response?: Response }).response;
 			statuses.push(response ? response.status : 200);
 			if (response && response.status === 429) {

@@ -223,7 +223,8 @@ export async function verifyApiKey(
 	if (key.status === 'suspended') return { ok: false, status: 403, reason: 'suspended' };
 	if (isPast(key.expiresAt)) return { ok: false, status: 401, reason: 'expired' };
 	// a missing profile is suspected cache staleness, not a bad credential
-	if (!getProfileAssumingFresh(key.profileId, db)) return { ok: false, status: 401, reason: 'no-profile' };
+	if (!getProfileAssumingFresh(key.profileId, db))
+		return { ok: false, status: 401, reason: 'no-profile' };
 	if (
 		key.ipAllowlist &&
 		key.ipAllowlist.length > 0 &&
