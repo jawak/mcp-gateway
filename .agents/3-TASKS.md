@@ -175,27 +175,49 @@
 
 ### T-12: McpGatewayServer + transport Web-standard
 - **Deskripsi:** `mcp/gateway.ts` membuat `McpServer` per sesi dengan `WebStandardStreamableHTTPServerTransport` (`sessionIdGenerator: uuidv7`, `onsessioninitialized/closed`, `enableJsonResponse` configurable, `keepAliveMs: 15000`), `handleRequest(req, undefined, { authInfo })`; negosiasi `protocolVersion` (2025-06-18 → fallback 2025-03-26 → 2024-11-05); deklarasi capabilities (`tools.listChanged: true`, `resources`, `prompts`); `mcp/event-store.ts` (EventStore in-memory, kapasitas 1.000 event/sesi) untuk resumability.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-02, T-10 · **Estimasi:** 8h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-02, T-10 · **Estimasi:** 8h
 - **File:** `src/lib/server/mcp/{gateway,event-store}.ts`, `tests/integration/mcp-handshake.test.ts`
 - **Acceptance:** `initialize` via `StreamableHTTPClientTransport` (klien nyata) sukses + header `Mcp-Session-Id`; versi protokol lama dinegosiasi; `DELETE /mcp` memanggil `onsessionclosed`; SSE resume dengan `Last-Event-ID` mengembalikan event yang terlewat.
+- **Catatan implementasi (2026-09-21):**
+  - `Server` level rendah (bukan `McpServer`): gateway punya kendali penuh atas `tools/list`, `resources/*`, `prompts/*` karena harus agregasi + namespacing + filter.
+  - Satu `Server` + transport per sesi; `authInfo` SDK diisi **id key**, bukan API key mentah.
+  - Pemetaan error: tool tak dikenal → `-32602`; tool di luar scope → `-32601` (tidak bisa dibedakan dari "tool tidak ada", jadi scope tidak bisa di-probe); kegagalan upstream → hasil `isError:true` (model jauh lebih baik memakainya daripada error protokol).
+  - `enableJsonResponse: true` default; SSE tetap tersedia. **Progress notification butuh mode SSE** — di mode JSON tidak ada kanal, jadi pengiriman progress di-`catch` agar call tidak gagal.
+  - Bug yang ditemukan test: `server.connect(transport)` lupa dipanggil → semua request menggantung sampai client menyerah.
+
 
 ### T-13: Session store + GC
 - **Deskripsi:** `mcp/session.ts`: baris `mcp_sessions` (id, api_key_id, profile_id, protocol_version, client_info, last_seen_at), update `last_used_at` (debounce 30 s), hitung sesi aktif untuk `/healthz`, GC sesi idle > `MCPGW_SESSION_TTL_MIN`, tutup transport saat `key.revoked`/`key.suspended` ≤ 5 s.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-12 (wire `key.revoked` dari T-21) · **Estimasi:** 4h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-12 (wire `key.revoked` dari T-21) · **Estimasi:** 4h
 - **File:** `src/lib/server/mcp/session.ts`, `tests/integration/session-gc.test.ts`
 - **Acceptance:** Sesi idle di-GC + `closed_at` terisi; setelah revoke key, `POST /mcp` dengan sesi lama → 401 dalam ≤ 5 s; `/healthz.sessions` akurat.
+- **Catatan implementasi (2026-09-21):**
+  - Indeks dua arah (id → sesi, keyId → set id) sehingga `closeForKey()` langsung menutup sesi key yang di-revoke/suspend (FR-03, ≤ beberapa detik).
+  - `collectGarbage(ttl)` berbasis `lastSeenAt`; jumlah sesi aktif mengalir ke `/healthz` dan nanti ke `mcp_active_sessions`.
+  - Baris DB `mcp_sessions` lewat adapter `SessionStore` opsional → modul tetap bisa diuji tanpa database. Baris nyata ditulis saat modul auth (T-22) memasang store-nya.
+
 
 ### T-14: Aggregator `tools/list` + cache catalog
 - **Deskripsi:** `mcp/aggregator.ts`: fan-out paralel `tools/list` (timeout `min(timeout_ms, 15000)`, `Promise.allSettled`), lewati upstream non-healthy/disabled tapi laporkan ke health, qualify names, lampirkan `_meta { upstream, upstreamTool, upstreamVersion, health }`, cache per profil (TTL `MCPGW_CATALOG_TTL_S`) + invalidasi via `registry.events`, paginasi cursor (urutan per-upstream), `listChanged` notification ke sesi terdampak saat catalog berubah.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-10, T-12 (invalidasi memakai event bus T-03) · **Estimasi:** 8h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-10, T-12 (invalidasi memakai event bus T-03) · **Estimasi:** 8h
 - **File:** `src/lib/server/mcp/aggregator.ts`, `tests/integration/tools-list.test.ts`, `tests/unit/catalog-cache.test.ts`
 - **Acceptance:** 2 fixture upstream → catalog gabungan dengan namespace benar; cache hit < 100 ms (asserted duration); 1 upstream sengaja mati → katalog tetap 200 tanpa tool-nya; perubahan registry → klien dapat `notifications/tools/list_changed`.
+- **Catatan implementasi (2026-09-21):**
+  - Fan-out per profil dengan concurrency terbatas + `Promise.allSettled` → satu upstream mati tidak memblokir (BR-04), error per-upstream muncul di `stats()` untuk UI.
+  - Cache per upstream dengan TTL (`MCPGW_CATALOG_TTL_S`) + invalidasi event (`upstream.changed/enabled`, `profile.changed`, `health.changed`); request bersamaan berbagi satu fetch.
+  - Status health dibaca **dari database** (health monitor hidup di proses worker terpisah), di-cache 5 detik; upstream `down`/`unconfigured` dilewati tanpa spawn.
+  - 3 bug nyata diketemukan test: nama deskriptor memakai nama mentah (nama tak valid `collide__a:b` bisa keluar ke klien dan collision tak terdeteksi), `resolveResourceUri` tidak memahami bentuk `scheme://slug__path`, dan `latestHealthByUpstream` tak punya tie-breaker dalam milidetik yang sama (kini `checkedAt, id`).
+
 
 ### T-15: Filter tool per sesi
 - **Deskripsi:** Terapkan `profile_upstreams.allow_globs/deny_globs` **saat request** (bukan hanya saat cache ditulis) + filter upstream disabled/down; hasil `tools/list` dan validasi `tools/call` memakai aturan yang sama (satu sumber kebenaran).
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-11, T-14 · **Estimasi:** 3h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-11, T-14 · **Estimasi:** 3h
 - **File:** `src/lib/server/mcp/{aggregator,tool-filter}.ts`, `tests/integration/tool-filter.test.ts`
 - **Acceptance:** Profil dengan deny `["*delete*"]` → tool terkait hilang dari list **dan** `tools/call` ke nama itu ditolak; deny menang atas allow (test matrix).
+- **Catatan implementasi (2026-09-21):**
+  - Filter diterapkan **saat read** terhadap nama terqualified (yang dilihat klien & yang ada di UI), bukan saat cache ditulis → perubahan aturan tidak pernah tertutup cache hangat, dan tool yang tersaring tidak bisa dipanggil dengan menebak nama (`resolve()` mengembalikan `undefined`).
+  - Kontrak eksplisit: pola ditulis terhadap nama terqualified (`github__create_*`); pola terhadap nama mentah sengaja tidak cocok (ada test-nya) supaya tidak ada "sihir" dua arti.
+
 
 ### T-16: Routing `tools/call`
 - **Deskripsi:** `mcp/gateway.ts` handler `tools/call`: lookup `byName` → `unknown tool` (-32602); cek scope/denylist; timeout `min(upstream.timeout_ms, 300_000)`; pass-through argumen & `content` (hanya tambah `_meta.upstreamTool`); retry 1x **hanya** untuk error transport (EPIPE/timeout/spawn fail), `isError: true` tidak di-retry; forward `notifications/progress` bila ada `progressToken`; tulis `tool_calls` + metrics (via T-21).
