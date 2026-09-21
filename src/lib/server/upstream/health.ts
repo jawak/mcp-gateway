@@ -297,7 +297,9 @@ export function latestHealthByUpstream(
 			checkedAt: upstreamHealth.checkedAt
 		})
 		.from(upstreamHealth)
-		.orderBy(desc(upstreamHealth.checkedAt))
+		// UUIDv7 ids break ties inside the same millisecond, so "latest" stays
+		// well-defined even when two probes land in one tick
+		.orderBy(desc(upstreamHealth.checkedAt), desc(upstreamHealth.id))
 		.all();
 	const latest = new Map<
 		string,

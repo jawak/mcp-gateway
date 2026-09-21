@@ -152,7 +152,7 @@ describe('events drive hot reload (BR-12)', () => {
 
 		const created = seedUpstream('evented');
 		setUpstreamEnabled(created.id, false);
-		const profile = createProfile({ name: `evt-${uuidv7().slice(0, 8)}` });
+		const profile = createProfile({ name: `evt-${uuidv7().slice(-8)}` });
 		deleteUpstream(created.id);
 
 		offChanged();
@@ -188,7 +188,7 @@ describe('events drive hot reload (BR-12)', () => {
 		const doomed = seedUpstream('doomed');
 		const other = seedUpstream('survivor');
 		const profile = createProfile({
-			name: `cascade-${uuidv7().slice(0, 8)}`,
+			name: `cascade-${uuidv7().slice(-8)}`,
 			links: [{ upstreamId: doomed.id }, { upstreamId: other.id }]
 		});
 		expect(scopeForProfile(profile.id).map((entry) => entry.upstream.slug)).toEqual([
@@ -205,7 +205,7 @@ describe('profiles and links', () => {
 		const a = seedUpstream('link-a');
 		const b = seedUpstream('link-b');
 		const profile = createProfile({
-			name: `links-${uuidv7().slice(0, 8)}`,
+			name: `links-${uuidv7().slice(-8)}`,
 			links: [{ upstreamId: a.id, allowGlobs: ['create_*'], denyGlobs: ['*draft*'] }]
 		});
 		expect(scopeForProfile(profile.id)[0]).toMatchObject({
@@ -225,21 +225,21 @@ describe('profiles and links', () => {
 	});
 
 	test('unknown upstream ids are refused before writing', () => {
-		const profile = createProfile({ name: `unknown-${uuidv7().slice(0, 8)}` });
+		const profile = createProfile({ name: `unknown-${uuidv7().slice(-8)}` });
 		expect(() => setProfileLinks(profile.id, [{ upstreamId: uuidv7() }])).toThrow(
 			/unknown upstream/
 		);
 	});
 
 	test('profile limits can be tuned', () => {
-		const profile = createProfile({ name: `limits-${uuidv7().slice(0, 8)}` });
+		const profile = createProfile({ name: `limits-${uuidv7().slice(-8)}` });
 		expect(profile).toMatchObject({ rateLimitRpm: 120, dailyCallQuota: 1000, maxConcurrency: 10 });
 		const updated = updateProfile(profile.id, { rateLimitRpm: 30, maxConcurrency: 3 });
 		expect(updated).toMatchObject({ rateLimitRpm: 30, maxConcurrency: 3 });
 	});
 
 	test('a profile used by an active key cannot be deleted (BR-08)', () => {
-		const profile = createProfile({ name: `guarded-${uuidv7().slice(0, 8)}` });
+		const profile = createProfile({ name: `guarded-${uuidv7().slice(-8)}` });
 		getDb()
 			.insert(apiKeys)
 			.values({
@@ -265,7 +265,7 @@ describe('profiles and links', () => {
 	});
 
 	test('an expired key no longer blocks deletion', () => {
-		const profile = createProfile({ name: `expired-${uuidv7().slice(0, 8)}` });
+		const profile = createProfile({ name: `expired-${uuidv7().slice(-8)}` });
 		getDb()
 			.insert(apiKeys)
 			.values({

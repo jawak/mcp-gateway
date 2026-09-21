@@ -207,7 +207,7 @@ describe('referential integrity', () => {
 
 describe('constraints', () => {
 	test('slug, email and key hash are unique', () => {
-		const slug = `dup-${uuidv7().slice(0, 8)}`;
+		const slug = `dup-${uuidv7().slice(-8)}`;
 		const values = { slug, name: 'a', transport: 'stdio' as const, connection: {} };
 		db.insert(upstreams)
 			.values({ id: uuidv7(), ...values })
