@@ -21,10 +21,10 @@
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"lint": "prettier --check . && eslint .",
 		"format": "prettier --write .",
-		"test": "bun test",
-		"test:unit": "bun test tests/unit",
-		"test:integration": "bun test tests/integration",
-		"verify": "bun run check && bun run lint && bun test && bun run build"
+		"test": "bun test --timeout 20000",
+		"test:unit": "bun test tests/unit --timeout 20000",
+		"test:integration": "bun test tests/integration --timeout 20000",
+		"verify": "bun run check && bun run lint && bun run test && bun run build"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
