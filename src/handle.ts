@@ -15,6 +15,7 @@ import { clientIp } from './lib/server/http/forwarded.ts';
 import { getConfig } from './lib/server/config.ts';
 import { status, uptimeSeconds } from './lib/server/observability/status.ts';
 import { tryHandleGatewayRoute } from './lib/server/gateway-routes.ts';
+import type { MigrationsState } from './lib/server/db/migrate.ts';
 
 /** Everything downstream (SvelteKit, MCP handlers) may need per request. */
 export type RequestContext = {
@@ -39,6 +40,13 @@ export type RouterDeps = {
 	version?: string;
 	maxBodyBytes?: number;
 	trustProxy?: boolean;
+	/**
+	 * Schema-readiness probe. Left undefined here — and therefore treated as ready —
+	 * so tests and embedders can build a router with no database at all. The
+	 * production entrypoint wires the real probe; that is the composition root's job,
+	 * not the routing layer's.
+	 */
+	readiness?: () => MigrationsState;
 };
 
 export function createFetchHandler(deps: RouterDeps): (request: Request) => Promise<Response> {
@@ -75,7 +83,8 @@ export function createFetchHandler(deps: RouterDeps): (request: Request) => Prom
 			mcp: mcp ?? (async () => notMounted()),
 			metrics,
 			healthz: () => healthzPayload(version),
-			maxBodyBytes
+			maxBodyBytes,
+			readiness: deps.readiness
 		});
 		if (gatewayResponse) return decorate(gatewayResponse);
 

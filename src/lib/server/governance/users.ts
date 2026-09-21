@@ -30,7 +30,10 @@ export type AdminUserRow = {
 	createdAt: string;
 };
 
-export const MIN_PASSWORD_LENGTH = 12;
+// The policy lives in `security/password.ts`; bound and re-exported so this module
+// can check it and the users page can still import it from here.
+import { MIN_PASSWORD_LENGTH } from '../security/password.ts';
+export { MIN_PASSWORD_LENGTH };
 
 export function listUsers(db: Db = getDb()): AdminUserRow[] {
 	return db

@@ -279,11 +279,20 @@ async function main(): Promise<void> {
 		);
 	} else {
 		const metrics = await fetch(`${base}/metrics`);
-		check(
-			'metrics are closed when no token is configured',
-			metrics.status === 404,
-			`got ${metrics.status}`
-		);
+		// A 401 here means the *instance* has a token that this script was not given:
+		// the endpoint is protected, which is correct. Reporting that as a failure
+		// would send an operator to fix code that is working.
+		if (metrics.status === 401) {
+			console.log(
+				'  skip metrics are closed when no token is configured — the instance has MCPGW_METRICS_TOKEN; export it for this script to test /metrics'
+			);
+		} else {
+			check(
+				'metrics are closed when no token is configured',
+				metrics.status === 404,
+				`got ${metrics.status}`
+			);
+		}
 	}
 
 	// 12. CSRF: a foreign origin must not be able to drive a form action

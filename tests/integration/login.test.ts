@@ -33,6 +33,7 @@ import { getDb, useDatabaseForTests } from '../../src/lib/server/db';
 import { runMigrations } from '../../src/lib/server/db/migrate';
 import { uuidv7 } from '../../src/lib/shared/ids';
 import { isoFromNow } from '../../src/lib/shared/time';
+import { resetConfigCache } from '../../src/lib/server/config';
 
 const dir = mkdtempSync(path.join(tmpdir(), 'mcpgw-login-'));
 const PASSWORD = 'correct horse battery staple';
@@ -332,4 +333,58 @@ afterAll(() => {
 	// the connection must close before the file goes away, otherwise later tests in
 	// the same process would hit a deleted database
 	rmSync(dir, { recursive: true, force: true });
+});
+
+describe('bootstrap password strength is enforced at seed time (T-04, T-44)', () => {
+	test('a weak MCPGW_ADMIN_PASSWORD skips the bootstrap with an actionable reason, without throwing', async () => {
+		const dir = mkdtempSync(path.join(tmpdir(), 'mcpgw-seed-weak-'));
+		const previous = { ...process.env };
+		try {
+			process.env.MCPGW_DATA_DIR = dir;
+			process.env.MCPGW_MASTER_KEY = 'f'.repeat(64);
+			process.env.MCPGW_PUBLIC_URL = 'https://seed.test';
+			process.env.MCPGW_ADMIN_EMAIL = 'root@example.com';
+			process.env.MCPGW_ADMIN_PASSWORD = 'asdf1234';
+			resetConfigCache();
+			const { db } = runMigrations({ dataDir: dir });
+			useDatabaseForTests(path.join(dir, 'mcpgw.db'));
+
+			const { seedAdmin, warnIfNoAccounts } = await import('../../src/lib/server/db/seed');
+			const result = await seedAdmin(db);
+			expect(result.created).toBe(false);
+			expect(result.reason).toMatch(/too short/);
+			expect(result.reason).toMatch(/12 characters/);
+			// the dead-end state is now visible instead of silent
+			expect(warnIfNoAccounts(db)).toBe(true);
+			expect(db.select().from(users).all()).toHaveLength(0);
+		} finally {
+			Object.assign(process.env, previous);
+			resetConfigCache();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('a sufficiently long bootstrap password still creates the account', async () => {
+		const dir = mkdtempSync(path.join(tmpdir(), 'mcpgw-seed-ok-'));
+		const previous = { ...process.env };
+		try {
+			process.env.MCPGW_DATA_DIR = dir;
+			process.env.MCPGW_MASTER_KEY = 'f'.repeat(64);
+			process.env.MCPGW_PUBLIC_URL = 'https://seed.test';
+			process.env.MCPGW_ADMIN_EMAIL = 'root@example.com';
+			process.env.MCPGW_ADMIN_PASSWORD = 'a-sufficiently-long-passphrase';
+			resetConfigCache();
+			const { db } = runMigrations({ dataDir: dir });
+			useDatabaseForTests(path.join(dir, 'mcpgw.db'));
+
+			const { seedAdmin, warnIfNoAccounts } = await import('../../src/lib/server/db/seed');
+			const result = await seedAdmin(db);
+			expect(result).toMatchObject({ created: true, email: 'root@example.com' });
+			expect(warnIfNoAccounts(db)).toBe(false);
+		} finally {
+			Object.assign(process.env, previous);
+			resetConfigCache();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });

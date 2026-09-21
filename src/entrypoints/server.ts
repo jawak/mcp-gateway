@@ -18,6 +18,7 @@ import path from 'node:path';
 import { createFetchHandler } from '../handle.ts';
 import { createGatewayApp } from '../lib/server/gateway-app.ts';
 import { ensureLoaded } from '../lib/server/registry/index.ts';
+import { migrationsState } from '../lib/server/readiness.ts';
 import { createMcpAuthenticator } from '../middleware/auth.ts';
 import { metrics } from '../lib/server/observability/metrics.ts';
 import {
@@ -28,7 +29,7 @@ import {
 } from '../lib/server/http/bridge.ts';
 import { serveStatic } from '../lib/server/http/static.ts';
 import { runMigrations } from '../lib/server/db/migrate.ts';
-import { seedAdmin } from '../lib/server/db/seed.ts';
+import { seedAdmin, warnIfNoAccounts } from '../lib/server/db/seed.ts';
 import { events } from '../lib/server/registry/events.ts';
 import { ConfigError, getConfig, type Config } from '../lib/server/config.ts';
 import { logger } from '../lib/server/observability/logger.ts';
@@ -89,8 +90,13 @@ async function createApp(): Promise<() => Promise<void>> {
 	const { db, version } = runMigrations();
 	log.info({ schema_version: version }, 'database migrated');
 	const seeded = await seedAdmin(db);
-	if (seeded.created)
-		log.info({ email: seeded.email, reason: seeded.reason }, 'admin bootstrapped');
+	warnIfNoAccounts(db);
+	// Report the outcome either way: "why can't I sign in?" is otherwise unanswerable
+	// from the logs when the bootstrap was silently skipped.
+	log[seeded.created ? 'info' : 'warn'](
+		{ email: seeded.email ?? null, reason: seeded.reason },
+		seeded.created ? 'admin bootstrapped' : 'admin bootstrap did not run'
+	);
 
 	const root = resolveRoot();
 	const clientDir = path.join(root, 'build', 'client');
@@ -110,6 +116,9 @@ async function createApp(): Promise<() => Promise<void>> {
 		metrics
 	});
 	const handleFetch = createFetchHandler({
+		// without this `/mcp` would answer 500 from the registry when the schema is
+		// absent; with it, a 503 that names the one command that fixes it
+		readiness: migrationsState,
 		mcp: (request, context) => gateway.endpoint.handle(request, context),
 		metrics: {
 			expose: () => metrics.expose(),

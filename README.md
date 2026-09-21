@@ -19,9 +19,25 @@ Bun ≥ 1.2 · SvelteKit 2 + adapter-node (one process; `/mcp` is mounted by a B
 ```sh
 bun install
 cp .env.example .env      # set MCPGW_MASTER_KEY + MCPGW_ADMIN_EMAIL/PASSWORD
-bun run db:migrate        # create ./data/mcpgw.db + bootstrap admin
 bun run dev               # dashboard + /mcp at http://localhost:5173
 ```
+
+`bun run dev` migrates the database itself and bootstraps the admin, so a fresh clone
+runs with one command — `bun run db:migrate` is never required first. Only the
+**worker** needs the schema to exist already, and it waits for it (up to
+`MCPGW_WORKER_WAIT_S`, default 60 s) before doing anything, refusing to start rather
+than sweeping a schema that is not there.
+
+Production is the opposite on purpose: the web process migrates once at boot and
+nothing else ever runs DDL, so N replicas can start without racing `ALTER TABLE`.
+If the schema is ever missing or behind, `/mcp` answers `503` naming the one command
+that fixes it and the dashboard says the same, while `/healthz` stays `200` with
+`ok: false` and `schema: "no-schema"` — a container healthcheck reports the problem
+without restart-looping a process that only needs a human.
+
+Blank variables in `.env` count as unset, so the copied example file boots as-is.
+`MCPGW_ADMIN_PASSWORD` shorter than 12 characters is reported at boot and the account
+is not created — the gateway still starts, and the log tells you why.
 
 | Script                                             | Purpose                                                            |
 | -------------------------------------------------- | ------------------------------------------------------------------ |
@@ -44,15 +60,25 @@ bun run smoke     --base-url http://localhost:8080
 bun run loadtest  --base-url http://localhost:8080 --sessions 200 --burst 200
 ```
 
+If the instance was started with `MCPGW_METRICS_TOKEN`, export it for the script too —
+otherwise `/metrics` correctly answers `401` and those checks are skipped, not failed.
+
 ## Deploy (VPS)
 
 ```sh
-cd deploy && cp .env.example .env && docker compose up -d
+cd deploy && cp .env.example .env
+docker build -f Dockerfile -t mcp-gateway:dev ..    # until a published image exists
+MCPGW_IMAGE=mcp-gateway:dev docker compose up -d
 ```
 
 Three services: Caddy (TLS, SSE-safe proxying), the gateway, and a separate worker so
 maintenance never delays a request. `/data` holds the SQLite database and snapshots —
 back that volume up.
+
+`deploy/docker-compose.yml` defaults `MCPGW_IMAGE` to `ghcr.io/your-org/mcp-gateway`,
+which only exists once the release workflow has run against a repository with a
+remote and a published package. Building locally avoids pulling an image that is not
+there. Edit the Caddyfile's `mcp.example.com` to your hostname first.
 
 ## Client setup
 
@@ -102,3 +128,19 @@ docs/                   NFR report
   instances**. Anything shared between them must go through the database, not process
   memory — the registry snapshot is a cache keyed on `kv.config_version` for exactly
   this reason.
+- A test that migrates in `beforeAll` cannot see a broken first run. Any 485-test suite
+  once passed while a fresh clone could not start, because nothing ever looked at a
+  database with no tables. When you change startup, readiness, or the registry, add a
+  case that starts from an **empty** database file.
+- Readiness is a decision, not an exception: `schemaIsPresent()`/`assertMigrated()`
+  return a value instead of throwing, `readiness` is injected into the router so the
+  routing layer never opens a database, and `/mcp` answers 503 with a hint rather than
+  500 with a stack. Keep it that way — a missing schema is an expected state that one
+  command fixes.
+- stdio children are spawned in a neutral directory (`<dataDir>/workdir`), never the
+  gateway's own. A child started in the app directory re-reads the gateway's `.env`
+  from disk, which hands every upstream package `MCPGW_MASTER_KEY` no matter how
+  carefully the spawn environment is filtered. Set `cwd` explicitly when an upstream
+  genuinely needs a project directory.
+- Subprocess tests pass `--no-env-file`: bun loads `.env` automatically, so a developer's
+  local `.env` would otherwise decide whether a test passes.

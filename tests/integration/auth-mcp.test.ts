@@ -13,6 +13,7 @@ import { runMigrations } from '../../src/lib/server/db/migrate';
 import { useDatabaseForTests, getDb } from '../../src/lib/server/db';
 import { profiles } from '../../src/lib/server/db/schema';
 import { uuidv7 } from '../../src/lib/shared/ids';
+import { resetConfigCache } from '../../src/lib/server/config';
 
 const dir = mkdtempSync(path.join(os.tmpdir(), 'mcpgw-auth-mcp-'));
 process.env.MCPGW_DATA_DIR = dir;
@@ -253,3 +254,78 @@ describe('cleanup', () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 });
+
+describe('origin check (T-22, T-44 dev ergonomics)', () => {
+	function requestTo(url: string, origin: string): Request {
+		return new Request(url, {
+			method: 'POST',
+			headers: { origin, 'content-type': 'application/json' }
+		});
+	}
+
+	test('development accepts an Origin matching the host the request arrived at', async () => {
+		const { createMcpAuthenticator } = await import('../../src/middleware/auth');
+		const authenticate = createMcpAuthenticator();
+		// vite may be on :5173 while MCPGW_PUBLIC_URL still says mcp.test: a browser
+		// on the same host must not be locked out by that mismatch
+		const status = await statusOf(
+			authenticate,
+			requestTo('http://localhost:5173/mcp', 'http://localhost:5173')
+		);
+		expect(status).not.toBe(403);
+	});
+
+	test('development still refuses a third-party Origin', async () => {
+		const { createMcpAuthenticator } = await import('../../src/middleware/auth');
+		expect(
+			await statusOf(
+				createMcpAuthenticator(),
+				requestTo('http://localhost:5173/mcp', 'https://evil.example')
+			)
+		).toBe(403);
+	});
+
+	test('development still refuses an unparseable Origin', async () => {
+		const { createMcpAuthenticator } = await import('../../src/middleware/auth');
+		expect(
+			await statusOf(createMcpAuthenticator(), requestTo('http://localhost:5173/mcp', 'not a url'))
+		).toBe(403);
+	});
+
+	test('production stays strict: a matching host is not enough, the configured origin is', async () => {
+		const previous = { ...process.env };
+		try {
+			process.env.NODE_ENV = 'production';
+			process.env.MCPGW_MASTER_KEY = 'a'.repeat(64);
+			process.env.MCPGW_PUBLIC_URL = 'https://mcp.test';
+			resetConfigCache();
+			const { createMcpAuthenticator } = await import('../../src/middleware/auth');
+			expect(
+				await statusOf(
+					createMcpAuthenticator(),
+					requestTo('http://localhost:5173/mcp', 'http://localhost:5173')
+				)
+			).toBe(403);
+			expect(
+				await statusOf(
+					createMcpAuthenticator(),
+					requestTo('https://mcp.test/mcp', 'https://mcp.test')
+				)
+			).not.toBe(403);
+		} finally {
+			Object.assign(process.env, previous);
+			resetConfigCache();
+		}
+	});
+});
+
+async function statusOf(
+	authenticate: (
+		request: Request,
+		context: { requestId: string; clientAddress: string }
+	) => Promise<unknown>,
+	request: Request
+): Promise<number> {
+	const result = await authenticate(request, { requestId: 'r', clientAddress: '1.2.3.4' });
+	return (result as { response?: Response }).response?.status ?? 200;
+}

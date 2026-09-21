@@ -27,8 +27,17 @@ function pad(): Promise<string> {
 	return dummyHash;
 }
 
+/**
+ * One place defines the policy; `hashPassword` enforces it for every caller
+ * (bootstrap, dashboard, CLI), so a rule can never be weaker on one path than
+ * another.
+ */
+export const MIN_PASSWORD_LENGTH = 12;
+
 export async function hashPassword(password: string): Promise<string> {
-	if (password.length < 12) throw new Error('password must be at least 12 characters');
+	if (password.length < MIN_PASSWORD_LENGTH) {
+		throw new Error(`password must be at least ${MIN_PASSWORD_LENGTH} characters`);
+	}
 	return argon2.hash(password, OPTIONS);
 }
 

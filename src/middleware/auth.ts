@@ -30,7 +30,7 @@ import {
 } from '../lib/server/governance/ratelimit.ts';
 import { getProfile } from '../lib/server/registry/index.ts';
 import { recordAudit } from '../lib/server/observability/audit.ts';
-import { getConfig } from '../lib/server/config.ts';
+import { getConfig, type Config } from '../lib/server/config.ts';
 import type { Db } from '../lib/server/db/index.ts';
 import { logger as rootLogger, type Logger } from '../lib/server/observability/logger.ts';
 import { nowIso } from '../lib/shared/time.ts';
@@ -38,6 +38,29 @@ import { nowIso } from '../lib/shared/time.ts';
 const WINDOW_MS = 60_000;
 const FAILURE_THRESHOLD = 10;
 const COOLDOWN_MS = 60_000;
+
+/**
+ * Does this browser Origin belong to us?
+ *
+ * Production compares against the configured public origin — the only trustworthy
+ * answer when a proxy terminates TLS.
+ *
+ * In development that value is a guess (vite may run on any port while the config
+ * falls back to `MCPGW_PORT`), so we additionally accept a host match against the
+ * request itself. That is still a real check, not a bypass: `https://evil.example`
+ * never equals the host a request arrived at, so a third-party page stays refused
+ * — only the "wrong port because nothing was configured" case stops failing.
+ */
+function originAccepted(origin: string, request: Request, config: Config): boolean {
+	if (origin === config.origin) return true;
+	if (config.isProduction) return false;
+	try {
+		return new URL(origin).host === new URL(request.url).host;
+	} catch {
+		// an unparseable Origin is foreign
+		return false;
+	}
+}
 /** `last_used_at` is a convenience column, so 30 s resolution is plenty. */
 const TOUCH_INTERVAL_MS = 30_000;
 /** Write an audit row for the first failure and then every Nth. */
@@ -102,7 +125,7 @@ export function createMcpAuthenticator(options: AuthenticatorOptions = {}): Auth
 
 		// 1. cross-origin browser traffic is never a legitimate MCP client
 		const origin = request.headers.get('origin');
-		if (origin && origin !== 'null' && origin !== config.origin) {
+		if (origin && origin !== 'null' && !originAccepted(origin, request, config)) {
 			return {
 				response: jsonResponse(
 					403,

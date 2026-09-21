@@ -12,6 +12,7 @@
 import { and, count, eq, inArray } from 'drizzle-orm';
 import { getDb, type Db } from '../db/index.ts';
 import { apiKeys, kv, profileUpstreams, profiles, upstreams } from '../db/schema.ts';
+import { MIGRATE_HINT, schemaIsPresent } from '../db/migrate.ts';
 import { toUpstreamRecord } from '../upstream/health.ts';
 import { uuidv7 } from '../../shared/ids.ts';
 import { isPast, nowIso } from '../../shared/time.ts';
@@ -107,10 +108,36 @@ const CONFIG_VERSION_KEY = 'config_version';
 const STALE_MS = 250;
 let seenVersion = -1;
 let checkedAt = 0;
+/** Keeps the "schema missing" warning to once per transition, not per probe. */
+let warnedMissingSchema = false;
 
 function currentConfigVersion(db: Db): number {
+	// A database that has not been migrated yet legitimately has no version row.
+	// Anything else (disk full, locked, corrupt) must still throw: pretending the
+	// configuration is merely "empty" would send an operator looking in the wrong
+	// place while the real fault is a failing disk.
+	if (missingSchema(db)) return 0;
 	const row = db.select().from(kv).where(eq(kv.key, CONFIG_VERSION_KEY)).get();
 	return row ? Number.parseInt(row.value, 10) || 0 : 0;
+}
+
+/**
+ * True when the schema is simply not there yet (first run, or a dropped table).
+ *
+ * Logs once per transition rather than on every 250 ms probe: on a first run this
+ * is checked on every request, and a warning per request is noise that hides the
+ * one message that matters.
+ */
+function missingSchema(db: Db): boolean {
+	if (schemaIsPresent(db)) {
+		warnedMissingSchema = false;
+		return false;
+	}
+	if (!warnedMissingSchema) {
+		warnedMissingSchema = true;
+		log.warn(`database schema is not present — ${MIGRATE_HINT} before expecting any upstreams`);
+	}
+	return true;
 }
 
 /** A local write: bump the shared version, then rebuild our own cache. */
@@ -152,6 +179,16 @@ function emptySnapshot(): RegistrySnapshot {
 
 /** Re-read config into memory. Cheap enough to call after every write. */
 export function reload(db: Db = getDb()): RegistrySnapshot {
+	// Degrade to an empty snapshot instead of throwing: this runs on request paths
+	// after the T-44 change that made every read refresh, and a missing schema must
+	// surface as a 503 with a hint (see gateway-routes) rather than a 500 stack.
+	if (missingSchema(db)) {
+		snapshot = emptySnapshot();
+		status.liveUpstreams = 0;
+		checkedAt = Date.now();
+		return snapshot;
+	}
+
 	const upstreamRows = db.select().from(upstreams).all();
 	const profileRows = db.select().from(profiles).all();
 	const linkRows = db.select().from(profileUpstreams).all();

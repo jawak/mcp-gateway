@@ -38,7 +38,9 @@ this check is about.
 
 ## Findings during this audit
 
-Both were real, neither was visible to the 480-odd unit/integration tests.
+None of the findings below were visible to the unit/integration tests — the first two
+rounds were found by running the thing, which is the only way a first-run defect can be
+found.
 
 1. **One `UPDATE` per MCP request.** `SessionRegistry.get()` wrote `last_seen_at` on
    every request. That column only feeds the idle collector — minute-level precision —
@@ -59,26 +61,68 @@ Both were real, neither was visible to the 480-odd unit/integration tests.
    expired, revoked or suspended key is a real credential that merely no longer works,
    and a cache race is a server-side condition, not a guess.
 
+### First-run cluster (found by running `bun run dev` on a fresh database)
+
+A fresh clone could not start: every request returned 500. Four defects, one symptom.
+
+3. **`vite dev` never migrated.** The production entrypoint migrates before accepting a
+   request; the dev path has no entrypoint and nobody added the call. Fixed by running
+   migrations and the admin bootstrap in the dev hook — and by clearing the cached init
+   promise on rejection, which had made a failed first request fatal for the lifetime of
+   the process, so migrating in a second terminal would not have helped.
+4. **The registry turned "no schema" into a 500.** Making every read path refresh its
+   cache (finding 1's companion) put `SELECT … FROM kv` in front of the very first query
+   of a fresh install. `currentConfigVersion()` and `reload()` now treat an absent schema
+   as "nothing configured yet" and log once per transition. The catch is deliberately
+   narrowed to the missing-schema condition: a failing disk must still fail loudly,
+   because an empty catalog would send an operator looking in the wrong place.
+5. **The worker never waited.** `migrate.ts` had documented since T-04 that the worker
+   polls for the schema, and `waitForMigrations()` had zero call sites — it was dropped
+   when the worker was rewritten. Restored, with a non-zero exit on timeout: a worker that
+   deletes retention data against the wrong schema is worse than one that never started.
+   Readiness is now a value (`schemaIsPresent`/`assertMigrated`) rather than an exception,
+   injected into the router so `/mcp` returns `503` with the command that fixes it, the
+   dashboard says the same, and `/healthz` stays `200 ok:false` so a container
+   healthcheck reports the state instead of restart-looping it.
+6. **A copied `.env` could not boot.** `MCPGW_METRICS_TOKEN=` in the example file is an
+   empty _string_, not unset, so `min(16)` rejected it — the first thing a new operator
+   does failed validation. Blank now means unset. Related: `MCPGW_ADMIN_PASSWORD` strength
+   was checked in the whole-process schema, so a weak bootstrap password stopped unrelated
+   processes (including the worker) from starting; the policy now lives where the value is
+   used, and a skipped bootstrap is logged instead of silent.
+
+### Security finding during test maintenance
+
+7. **stdio children inherited the gateway's `.env`.** The spawn environment is allowlisted,
+   but the child's _working directory_ was the gateway's own, and Bun re-reads `./.env` at
+   startup — so any upstream package could read `MCPGW_MASTER_KEY` regardless of filtering.
+   Children now start in a neutral `<dataDir>/workdir` unless `cwd` is set explicitly. The
+   existing environment-hygiene test caught this; it had been green only because no `.env`
+   existed in that checkout yet, which is itself the lesson: a test that depends on the
+   absence of a file the developer is expected to create is not a test.
+
 ## Security checklist
 
-| Item                         | Requirement                                      | Status | Evidence                                                                                                                                                  |
-| ---------------------------- | ------------------------------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| API key storage              | hash only, shown once                            | done   | `tests/integration/apikey-lifecycle.test.ts` asserts the plaintext is absent from the DB and from a later page read; smoke test confirms one-time display |
-| Revocation latency           | seconds, not idle timeout                        | done   | smoke: live session → revoke → next request `401 revoked`                                                                                                 |
-| Password storage             | argon2id                                         | done   | `tests/unit/vault.test.ts`, login tests assert hash shape                                                                                                 |
-| Enumeration resistance       | same message and timing                          | done   | dummy-hash verify on unknown accounts; test compares both message and time ratio                                                                          |
-| IP backoff                   | 10 bad guesses/min → cooldown, per address       | done   | `tests/integration/auth-mcp.test.ts`                                                                                                                      |
-| Secrets at rest              | AES-256-GCM, never returned                      | done   | `tests/unit/vault.test.ts`; API surface only ever lists names                                                                                             |
-| No child-process secret leak | allowlisted env                                  | done   | `tests/integration/gateway-e2e.test.ts` proves `MCPGW_MASTER_KEY` is invisible to the spawned child                                                       |
-| Manifest cannot carry tokens | reject inlined credentials                       | done   | `tests/integration/manifest.test.ts` (import rejected, nothing written) + smoke asserts the export has no credential shapes                               |
-| SSRF guard                   | https, private ranges, metadata IP, no redirects | done   | `tests/unit/ssrf.test.ts`, `tests/integration/remote-upstream.test.ts`                                                                                    |
-| CSRF                         | origin check on form actions                     | done   | smoke: cross-origin form action → `403`                                                                                                                   |
-| RBAC                         | viewer cannot mutate                             | done   | `tests/unit/rbac.test.ts` policy matrix + hook tests                                                                                                      |
-| Admin lockout                | 5 failures → 15 min                              | done   | `tests/integration/login.test.ts`                                                                                                                         |
-| Audit trail                  | append-only, covering config writes              | done   | `tests/integration/audit.test.ts`; no update/delete path exists in the module                                                                             |
-| Header hygiene               | CSP, nosniff, DENY, referrer, permissions        | done   | `tests/unit/rbac.test.ts`                                                                                                                                 |
-| Non-root container           | —                                                | done   | `deploy/Dockerfile` creates and switches to `mcpgw`                                                                                                       |
-| Metrics not public           | token required, closed when unset                | done   | smoke: `/metrics` 404 without a configured token                                                                                                          |
+| Item                         | Requirement                                      | Status | Evidence                                                                                                                                                            |
+| ---------------------------- | ------------------------------------------------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| API key storage              | hash only, shown once                            | done   | `tests/integration/apikey-lifecycle.test.ts` asserts the plaintext is absent from the DB and from a later page read; smoke test confirms one-time display           |
+| Revocation latency           | seconds, not idle timeout                        | done   | smoke: live session → revoke → next request `401 revoked`                                                                                                           |
+| Password storage             | argon2id                                         | done   | `tests/unit/vault.test.ts`, login tests assert hash shape                                                                                                           |
+| Enumeration resistance       | same message and timing                          | done   | dummy-hash verify on unknown accounts; test compares both message and time ratio                                                                                    |
+| IP backoff                   | 10 bad guesses/min → cooldown, per address       | done   | `tests/integration/auth-mcp.test.ts`                                                                                                                                |
+| Secrets at rest              | AES-256-GCM, never returned                      | done   | `tests/unit/vault.test.ts`; API surface only ever lists names                                                                                                       |
+| Secrets in spawned children  | allowlisted env **and** neutral cwd              | done   | `tests/integration/stdio-upstream.test.ts` asserts the child sees neither `MCPGW_MASTER_KEY` nor the gateway's `.env`                                               |
+| First-run / degraded schema  | one actionable answer, never a stack trace       | done   | `tests/unit/migrate-readiness.test.ts`, `worker-wait.test.ts`; verified by dropping the schema under a running server: `/mcp` 503 + hint, `/healthz` 200 `ok:false` |
+| No child-process secret leak | allowlisted env                                  | done   | `tests/integration/gateway-e2e.test.ts` proves `MCPGW_MASTER_KEY` is invisible to the spawned child                                                                 |
+| Manifest cannot carry tokens | reject inlined credentials                       | done   | `tests/integration/manifest.test.ts` (import rejected, nothing written) + smoke asserts the export has no credential shapes                                         |
+| SSRF guard                   | https, private ranges, metadata IP, no redirects | done   | `tests/unit/ssrf.test.ts`, `tests/integration/remote-upstream.test.ts`                                                                                              |
+| CSRF                         | origin check on form actions                     | done   | smoke: cross-origin form action → `403`                                                                                                                             |
+| RBAC                         | viewer cannot mutate                             | done   | `tests/unit/rbac.test.ts` policy matrix + hook tests                                                                                                                |
+| Admin lockout                | 5 failures → 15 min                              | done   | `tests/integration/login.test.ts`                                                                                                                                   |
+| Audit trail                  | append-only, covering config writes              | done   | `tests/integration/audit.test.ts`; no update/delete path exists in the module                                                                                       |
+| Header hygiene               | CSP, nosniff, DENY, referrer, permissions        | done   | `tests/unit/rbac.test.ts`                                                                                                                                           |
+| Non-root container           | —                                                | done   | `deploy/Dockerfile` creates and switches to `mcpgw`                                                                                                                 |
+| Metrics not public           | token required, closed when unset                | done   | smoke: `/metrics` 404 without a configured token                                                                                                                    |
 
 ## Known gaps (accepted for V1.0)
 

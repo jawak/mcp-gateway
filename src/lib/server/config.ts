@@ -45,6 +45,8 @@ export type Config = {
 	/** Skip upstream certificate verification. */
 	allowInsecureTls: boolean;
 	upstreamConnectTimeoutMs: number;
+	/** How long the worker waits for the gateway to migrate before giving up. */
+	workerWaitMs: number;
 	gracefulShutdownMs: number;
 	maxBodyBytes: number;
 	healthIntervalMs: number;
@@ -97,11 +99,11 @@ const envSchema = z.object({
 		.optional(),
 	MCPGW_METRICS_TOKEN: z.string().min(16, 'must be at least 16 characters if set').optional(),
 	MCPGW_ADMIN_EMAIL: z.string().min(1).refine(isEmail, 'must be a valid email address').optional(),
-	MCPGW_ADMIN_PASSWORD: z
-		.string()
-		.min(12, 'must be at least 12 characters')
-		.max(512, 'must be at most 512 characters')
-		.optional(),
+	// Strength is validated where the value is used (`db/seed.ts`, enforced by
+	// `hashPassword`), not here: this is a bootstrap input, not a runtime setting,
+	// and validating it in the whole-process schema let a weak bootstrap password
+	// stop unrelated processes (the worker) from starting at all.
+	MCPGW_ADMIN_PASSWORD: z.string().max(512, 'must be at most 512 characters').optional(),
 	MCPGW_DATA_DIR: z.string().min(1).default('./data'),
 	MCPGW_PORT: z.coerce.number().int().min(1).max(65535).default(8080),
 	MCPGW_HOST: z.string().min(1).default('0.0.0.0'),
@@ -117,6 +119,7 @@ const envSchema = z.object({
 	MCPGW_ALLOW_PRIVATE_NETWORK: truthyDefault(false),
 	MCPGW_ALLOW_INSECURE_TLS: truthyDefault(false),
 	MCPGW_UPSTREAM_CONNECT_TIMEOUT_S: positiveSeconds.default(10),
+	MCPGW_WORKER_WAIT_S: positiveSeconds.default(60),
 	MCPGW_SHUTDOWN_TIMEOUT_S: positiveSeconds.default(30),
 	MCPGW_MAX_BODY_BYTES: z.coerce.number().int().min(1024).max(33_554_432).default(1_048_576),
 	MCPGW_HEALTH_INTERVAL_S: positiveSeconds.default(30),
@@ -184,13 +187,31 @@ export type LoadConfigOptions = {
 
 let cached: { key: string; config: Config } | undefined;
 
+/**
+ * Treat an empty environment value as "not set".
+ *
+ * A copied `.env.example` contains lines like `MCPGW_METRICS_TOKEN=` for the
+ * optional variables, and an empty string is not `undefined` — without this, the
+ * very first thing a new operator does (copy the example file) fails validation
+ * on `min(16)`/`min(32)`, and `z.coerce.number()` would turn `MCPGW_PORT=` into 0.
+ * Blank means "I did not configure this", which is exactly what `undefined` means
+ * to the schema and its defaults.
+ */
+function normalizeEnv(env: EnvInput): EnvInput {
+	const out: EnvInput = {};
+	for (const [key, value] of Object.entries(env)) {
+		out[key] = value === undefined || value.trim() === '' ? undefined : value;
+	}
+	return out;
+}
+
 export function loadConfig(options: LoadConfigOptions = {}): Config {
-	const env = options.env ?? process.env;
-	const isProduction = (env.NODE_ENV ?? '').toLowerCase() === 'production';
+	const raw = options.env ?? process.env;
+	const isProduction = (raw.NODE_ENV ?? '').toLowerCase() === 'production';
 	const mode: Mode = options.mode ?? (isProduction ? 'strict' : 'lenient');
 	const warn = options.warn ?? ((message: string) => console.warn(`[config] ${message}`));
 
-	const parsed = envSchema.safeParse(env);
+	const parsed = envSchema.safeParse(normalizeEnv(raw));
 	if (!parsed.success) throw new ConfigError(toIssues(parsed.error));
 	const e = parsed.data;
 
@@ -259,6 +280,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
 		allowPrivateNetwork: e.MCPGW_ALLOW_PRIVATE_NETWORK,
 		allowInsecureTls: e.MCPGW_ALLOW_INSECURE_TLS,
 		upstreamConnectTimeoutMs: e.MCPGW_UPSTREAM_CONNECT_TIMEOUT_S * 1000,
+		workerWaitMs: e.MCPGW_WORKER_WAIT_S * 1000,
 		gracefulShutdownMs: e.MCPGW_SHUTDOWN_TIMEOUT_S * 1000,
 		maxBodyBytes: e.MCPGW_MAX_BODY_BYTES,
 		healthIntervalMs: e.MCPGW_HEALTH_INTERVAL_S * 1000,

@@ -15,6 +15,9 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { eq } from 'drizzle-orm';
+import path from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { getConfig } from '../config.ts';
 import type {
 	CallToolOptions,
 	CallToolResult,
@@ -58,6 +61,21 @@ export type StdioHandleOptions = {
 
 const STDERR_TAIL_LINES = 40;
 const CLIENT_INFO = { name: 'mcp-gateway', version: '1.0.0' } as const;
+
+/**
+ * Neutral, writable directory for children that do not declare one.
+ * Under the data dir, so it exists wherever the gateway is allowed to write and
+ * contains no application files or `.env`.
+ */
+function defaultWorkDir(): string {
+	const dir = path.join(getConfig().dataDir, 'workdir');
+	try {
+		mkdirSync(dir, { recursive: true });
+	} catch {
+		// if it cannot be created the spawn will fail with a clearer error
+	}
+	return dir;
+}
 
 /** Open a `secret:<name>` reference against the vault (T-05). */
 export function openSecretByName(name: string): string | undefined {
@@ -108,6 +126,13 @@ export async function connectStdio(options: StdioHandleOptions): Promise<Upstrea
 		...baseProcessEnv(options.hostEnv ?? process.env),
 		...resolved.values
 	};
+
+	// Never inherit the gateway's own working directory. A child started in the app
+	// directory re-reads the gateway's `.env` from disk — bun does this automatically
+	// — which hands any upstream package `MCPGW_MASTER_KEY` no matter how carefully
+	// the spawned environment is filtered. Upstreams that genuinely need a project
+	// directory set `cwd` explicitly.
+	const workDir = connection.cwd ? path.resolve(connection.cwd) : defaultWorkDir();
 
 	const stderrTail: string[] = [];
 	let stderrBuffer = '';
@@ -179,7 +204,7 @@ export async function connectStdio(options: StdioHandleOptions): Promise<Upstrea
 			command: connection.command,
 			args: connection.args ?? [],
 			env,
-			cwd: connection.cwd,
+			cwd: workDir,
 			stderr: 'pipe',
 			maxBufferSize: options.maxBufferSizeBytes ?? 10 * 1024 * 1024
 		});

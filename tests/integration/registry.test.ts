@@ -323,3 +323,29 @@ describe('snapshot integrity', () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 });
+
+describe('degradation when the schema is absent (first run)', () => {
+	test('reads return empty instead of throwing a 500-worthy error', async () => {
+		const { mkdtempSync, rmSync } = await import('node:fs');
+		const os = await import('node:os');
+		const dir = mkdtempSync(path.join(os.tmpdir(), 'mcpgw-reg-empty-'));
+		try {
+			const { createDatabase, useDatabaseForTests } = await import('../../src/lib/server/db');
+			// repoint the module singleton, because the read paths go through getDb()
+			useDatabaseForTests(path.join(dir, 'mcpgw.db'));
+			const { db } = createDatabase(path.join(dir, 'mcpgw.db'));
+			const registry = await import('../../src/lib/server/registry');
+
+			// reload() is what every read path funnels into; it must degrade, not throw
+			expect(() => registry.reload(db)).not.toThrow();
+			expect(registry.listUpstreams(db)).toEqual([]);
+			expect(registry.listProfiles()).toEqual([]);
+			expect(registry.getUpstreamBySlug('anything')).toBeUndefined();
+			expect(registry.getUpstreamById('anything')).toBeUndefined();
+			expect(registry.getProfile('anything')).toBeUndefined();
+			expect(registry.scopeForProfile('anything')).toEqual([]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});

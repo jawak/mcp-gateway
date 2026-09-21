@@ -8,15 +8,26 @@
  * so a route that works in dev cannot silently behave differently in production.
  */
 import { json, PayloadTooLargeError } from './http/bridge.ts';
+import { notReadyResponse } from './readiness.ts';
+import type { MigrationsState } from './db/migrate.ts';
 import type { RequestContext } from '../../handle.ts';
 
 const MCP_METHODS = ['POST', 'GET', 'DELETE'];
+
+const READY: MigrationsState = { ok: true, version: 1, expected: 1 };
 
 export type GatewayRoutes = {
 	mcp: (request: Request, context: RequestContext) => Promise<Response>;
 	metrics?: { expose(): Promise<string>; token?: string; beforeScrape?: () => void };
 	healthz: () => Record<string, unknown>;
 	maxBodyBytes?: number;
+	/**
+	 * Schema-readiness probe. Injected rather than read from a global here: this
+	 * module is the pure routing layer, and opening a database inside it would make
+	 * the router untestable and couple route semantics to filesystem state.
+	 * Defaults to ready, so embedders and tests need not know about it.
+	 */
+	readiness?: () => MigrationsState;
 };
 
 /** Returns undefined when the path belongs to the application, not the gateway. */
@@ -26,15 +37,28 @@ export async function tryHandleGatewayRoute(
 	routes: GatewayRoutes
 ): Promise<Response | undefined> {
 	const path = normalisePath(new URL(request.url).pathname);
+	const schemaState = routes.readiness ? routes.readiness() : READY;
 
 	switch (path) {
+		// 200 even when not ready: the container healthcheck must surface the problem
+		// without restart-looping a process that only needs one command from a human
 		case '/healthz':
-			return json(routes.healthz());
+			return json({
+				...routes.healthz(),
+				ok: schemaState.ok,
+				schema: schemaState.ok ? 'ready' : schemaState.reason,
+				...(schemaState.ok ? {} : { hint: schemaState.hint })
+			});
 
 		case '/metrics':
+			// metrics stay available: the readiness gauges are how an operator learns
+			// about the outage in the first place
 			return await handleMetrics(request, routes.metrics);
 
 		case '/mcp': {
+			// refuse before touching auth or a session: a missing schema would surface
+			// as a 500 stack from the registry instead of this one clear answer
+			if (!schemaState.ok) return notReadyResponse(schemaState);
 			// MCP Streamable HTTP allows only POST/GET/DELETE; refuse the rest before
 			// authentication so a bad verb never touches a session
 			if (!MCP_METHODS.includes(request.method.toUpperCase())) {

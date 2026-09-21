@@ -3,6 +3,7 @@ import { decideAccess, securityHeaders } from '$lib/server/governance/rbac';
 import { tryHandleGatewayRoute } from '$lib/server/gateway-routes';
 import { healthzPayload, type RequestContext } from './handle';
 import { clientIp } from '$lib/server/http/forwarded';
+import { migrationsState, notReadyHtmlResponse, resetReadinessCache } from '$lib/server/readiness';
 import {
 	resolveAdminSession,
 	destroyAdminSession,
@@ -27,6 +28,10 @@ export const handle = (async ({ event, resolve }) => {
 		await gatewayRoutes()
 	);
 	if (gatewayResponse) return withSecurityHeaders(gatewayResponse);
+
+	// The dashboard cannot do anything without the schema, and letting it try turns a
+	// one-command fix into a stack trace on every page.
+	if (!migrationsState().ok) return withSecurityHeaders(notReadyHtmlResponse());
 
 	const cookieValue = event.cookies.get(SESSION_COOKIE);
 	const resolved = cookieValue ? resolveAdminSession(cookieValue) : undefined;
@@ -95,9 +100,16 @@ function requestContext(event: RequestEvent): RequestContext {
  * database. Production serves those paths from the Bun router, so this stays
  * unused there; in dev the first /mcp, /metrics or /healthz request builds it.
  */
-let gatewayPromise: ReturnType<typeof buildGatewayRoutes> | undefined;
+let gatewayPromise: Promise<Awaited<ReturnType<typeof buildGatewayRoutes>>> | undefined;
+
 function gatewayRoutes() {
-	gatewayPromise ??= buildGatewayRoutes();
+	gatewayPromise ??= buildGatewayRoutes().catch((error: unknown) => {
+		// Do not cache a failed init: an operator who runs `bun run db:migrate` in a
+		// second terminal while `vite dev` is up must be served on the next request,
+		// not permanently bricked for the lifetime of the process.
+		gatewayPromise = undefined;
+		throw error;
+	});
 	return gatewayPromise;
 }
 
@@ -107,15 +119,35 @@ async function buildGatewayRoutes() {
 		{ createMcpAuthenticator },
 		{ metrics },
 		{ ensureLoaded },
-		{ getConfig }
+		{ getConfig },
+		migrateModule,
+		seedModule
 	] = await Promise.all([
 		import('$lib/server/gateway-app'),
 		import('./middleware/auth'),
 		import('$lib/server/observability/metrics'),
 		import('$lib/server/registry/index'),
-		import('$lib/server/config')
+		import('$lib/server/config'),
+		import('$lib/server/db/migrate'),
+		import('$lib/server/db/seed')
 	]);
 	const config = getConfig();
+
+	// `vite dev` has no Bun entrypoint of its own, and the production entrypoint
+	// already migrates before it accepts a request — so dev does the same here, or a
+	// fresh clone cannot start at all. Never in production: N web replicas racing DDL
+	// is an outage, and the single-writer rule lives in the Tech Spec.
+	if (!config.isProduction) {
+		const { version } = migrateModule.runMigrations();
+		const seeded = await seedModule.seedAdmin();
+		// the readiness verdict may have been cached as "not ready" by the request
+		// that triggered this very migration
+		resetReadinessCache();
+		console.log(
+			`[dev] schema at version ${version} · admin bootstrap: ${seeded.reason}${seeded.created ? ` (${seeded.email})` : ''}`
+		);
+	}
+
 	ensureLoaded();
 	const gateway = createGatewayApp({ authenticate: createMcpAuthenticator({ metrics }), metrics });
 	return {
@@ -131,7 +163,8 @@ async function buildGatewayRoutes() {
 				})
 		},
 		healthz: () => healthzPayload(config.version),
-		maxBodyBytes: config.maxBodyBytes
+		maxBodyBytes: config.maxBodyBytes,
+		readiness: migrationsState
 	};
 }
 

@@ -118,14 +118,14 @@ describe('loadConfig — coercion and defaults', () => {
 		try {
 			loadConfig({
 				mode: 'strict',
-				env: env({ MCPGW_PORT: 'x', MCPGW_LOG_LEVEL: 'shout', MCPGW_ADMIN_PASSWORD: 'short' })
+				env: env({ MCPGW_PORT: 'x', MCPGW_LOG_LEVEL: 'shout', MCPGW_ADMIN_EMAIL: 'not-an-email' })
 			});
 			throw new Error('expected loadConfig to throw');
 		} catch (error) {
 			const issues = (error as ConfigError).issues.join('\n');
 			expect(issues).toContain('MCPGW_PORT');
 			expect(issues).toContain('MCPGW_LOG_LEVEL');
-			expect(issues).toContain('MCPGW_ADMIN_PASSWORD');
+			expect(issues).toContain('MCPGW_ADMIN_EMAIL');
 		}
 	});
 
@@ -181,5 +181,59 @@ describe('key derivation', () => {
 			Buffer.from(deriveKey(key, 'b')).toString('hex')
 		);
 		expect(deriveKey(key, 'a', 16)).toHaveLength(16);
+	});
+});
+
+describe('blank environment values are treated as unset', () => {
+	// a copied .env.example contains `MCPGW_METRICS_TOKEN=` for every optional
+	// variable; an empty string is not `undefined`, so without normalisation the
+	// first thing a new operator does fails validation
+	const BASE = { MCPGW_MASTER_KEY: 'a'.repeat(64), MCPGW_PUBLIC_URL: 'https://mcp.test' };
+
+	test('an empty optional variable falls back to unset instead of failing min()', () => {
+		const config = loadConfig({
+			mode: 'strict',
+			env: {
+				...BASE,
+				MCPGW_METRICS_TOKEN: '',
+				MCPGW_COOKIE_SECRET: '',
+				MCPGW_ADMIN_EMAIL: '',
+				MCPGW_ADMIN_PASSWORD: ''
+			}
+		});
+		expect(config.metricsToken).toBeUndefined();
+		expect(config.admin).toEqual({ email: undefined, password: undefined });
+	});
+
+	test('whitespace-only counts as unset too', () => {
+		const config = loadConfig({ mode: 'strict', env: { ...BASE, MCPGW_METRICS_TOKEN: '   ' } });
+		expect(config.metricsToken).toBeUndefined();
+	});
+
+	test('a blank numeric variable uses its default rather than coercing to 0', () => {
+		const config = loadConfig({
+			mode: 'strict',
+			env: { ...BASE, MCPGW_PORT: '', MCPGW_HEALTH_INTERVAL_S: '' }
+		});
+		expect(config.port).toBe(8080);
+		expect(config.healthIntervalMs).toBe(30_000);
+	});
+
+	test('a blank required secret still reports as missing in production', () => {
+		expect(() =>
+			loadConfig({
+				env: { NODE_ENV: 'production', MCPGW_MASTER_KEY: '', MCPGW_PUBLIC_URL: 'https://x.test' }
+			})
+		).toThrow(/MCPGW_MASTER_KEY/);
+	});
+
+	test('a weak bootstrap password does not block the process — seed/hashPassword enforce it', () => {
+		// Validating strength here let a bootstrap input stop unrelated processes
+		// (the worker) from starting at all.
+		const config = loadConfig({
+			mode: 'strict',
+			env: { ...BASE, MCPGW_ADMIN_PASSWORD: 'asdf1234' }
+		});
+		expect(config.admin.password).toBe('asdf1234');
 	});
 });
