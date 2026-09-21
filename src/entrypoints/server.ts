@@ -16,6 +16,8 @@
 import http from 'node:http';
 import path from 'node:path';
 import { createFetchHandler } from '../handle.ts';
+import { createGatewayApp } from '../lib/server/gateway-app.ts';
+import { createMcpAuthenticator } from '../middleware/auth.ts';
 import {
 	PayloadTooLargeError,
 	toWebRequest,
@@ -98,7 +100,9 @@ async function createApp(): Promise<() => Promise<void>> {
 	});
 	log.info({ root, version: config.version }, 'sveltekit server initialised');
 
+	const gateway = createGatewayApp({ authenticate: createMcpAuthenticator() });
 	const handleFetch = createFetchHandler({
+		mcp: (request, context) => gateway.endpoint.handle(request, context),
 		sveltekit: async (request, context) => {
 			const staticResponse = await serveStatic(request, { root: clientDir });
 			if (staticResponse) return staticResponse;
