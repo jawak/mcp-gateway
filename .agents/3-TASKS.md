@@ -317,21 +317,40 @@
 
 ### T-24: Profil & scope
 - **Deskripsi:** `governance/profile.ts`: CRUD profil + `profile_upstreams` (globs), `getScope(profileId)` → daftar upstream + aturan glob (di-cache, invalidasi via event), estimasi jumlah tool untuk UI, default rate limit/timeout (BR-06), guard profil terakhir/admin default.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-19, T-23 · **Estimasi:** 4h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-19, T-23 · **Estimasi:** 4h
 - **File:** `src/lib/server/governance/profile.ts`, `tests/integration/profile-scope.test.ts`
 - **Acceptance:** 2 key dengan profil berbeda → `tools/list` berbeda sesuai scope; key A memanggil tool milik profil B → ditolak (uji isolasi wajib dari acceptance Tech Spec).
+- **Catatan implementasi (2026-09-21):**
+  - CRUD + batas (rpm, quota harian, konkurensi, timeout default) sudah ada di registry (T-19); `scopeForProfile()` menjadi satu-satunya sumber scope untuk agregator (T-14) dan pemanggilan (T-16).
+  - Guard BR-08 ditegakkan dua lapis: kode (`deleteProfile` menolak bila ada key aktif) dan skema (FK `api_keys.profile_id` RESTRICT membuat penghapusan gagal walau kodenya dilewati) — ada tes yang membuktikan keduanya.
+  - Isoler per kunci diverifikasi di e2e: tool yang disaring profil tidak muncul di `tools/list` dan `resolve()` mengembalikan `undefined`, jadi tidak bisa dipanggil dengan menebak nama.
+
 
 ### T-25: Audit trail
 - **Deskripsi:** `observability/audit.ts`: `record(actor_type, actor_id, action, target, meta, ip, request_id)` append-only (tanpa fungsi update/delete), auto-audit semua form action (helper `withAudit`), timeline query terpaginasi, export CSV (`/api/v1/audit`, `/api/v1/logs/export.csv`), retensi 180 hari (GC worker).
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-21 · **Estimasi:** 4h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-21 · **Estimasi:** 4h
 - **File:** `src/lib/server/observability/audit.ts`, `src/routes/api/v1/audit/+server.ts`, `src/routes/api/v1/logs/export.csv/+server.ts`, `tests/integration/audit.test.ts`
 - **Acceptance:** Setiap CRUD upstream/key/profil menghasilkan baris audit dengan actor+ip+request_id; export CSV berisi header + baris yang difilter; tidak ada jalur API untuk menghapus audit.
+- **Catatan implementasi (2026-09-21):**
+  - Append-only by construction: modul hanya mengekspos `recordAudit`/`listAudit`/`pruneAudit`; tidak ada jalur update, dan satu-satunya DELETE adalah berdasarkan umur.
+  - Meta di-redaksi sebelum masuk tabel (token/Bearer tidak pernah tersimpan), dan kegagalan tulis hanya dilog — aksi admin yang sudah terjadi tidak dibatalkan oleh kegagalan pencatatan.
+  - `pruneAudit(days)` clamp ke 1 hari untuk nilai ≤ 0 (kesalahan konfigurasi tidak seharusnya menghapus seluruh riwayat).
+  - `auditToCsv` mengikuti RFC 4180; tesnya mem-parse balik CSV dengan parser sungguhan untuk membuktikan nilai berisi koma/kutipan/baris baru tetap satu kolom.
+
 
 ### T-26: Request tracing + metrics + `/healthz`
 - **Deskripsi:** `hooks.server.ts` generate/teruskan `X-Request-Id` (ke log, `tool_calls`, header respons, dan metadata ke upstream); `observability/metrics.ts` (prom-client: `mcp_tool_calls_total`, `mcp_tool_call_duration_seconds`, `mcp_upstream_healthy`, `mcp_active_sessions`, `mcp_rate_limited_total`, `mcp_registry_items`); `/metrics` dengan Bearer `MCPGW_METRICS_TOKEN`; `/healthz` real (upstreams healthy/down, sessions, version).
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-16, T-09, T-13 · **Estimasi:** 4h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-16, T-09, T-13 · **Estimasi:** 4h
 - **File:** `src/hooks.server.ts`, `src/lib/server/observability/{metrics,logger}.ts`, `src/handle.ts`, `tests/integration/metrics.test.ts`
 - **Acceptance:** `curl -H "Authorization: Bearer $MCPGW_METRICS_TOKEN" /metrics` memuat nama metrik di atas; 1 tool call menaikkan counter + histogram; `/healthz` menampilkan hitungan benar; `X-Request-Id` request muncul di `tool_calls`.
+- **Catatan implementasi (2026-09-21):**
+  - Metrik: `mcp_tool_calls_total{upstream,tool,status}`, `mcp_tool_call_duration_seconds`, `mcp_rate_limited_total{key}`, `mcp_auth_failures_total{reason}`, `mcp_active_sessions`, `mcp_upstream_healthy{state}`, `mcp_pooled_upstreams`, `mcp_catalog_upstreams{slug,state}`, `mcp_build_info`.
+  - Gauge diisi **saat scrape** (`beforeScrape`) dari state hidup, jadi tidak bisa melenceng antar scrape; label dibatasi ke nama upstream/nama key yang dikendalikan operator (kardinalitas terkendali).
+  - `/metrics` membandingkan token secara constant-time; tanpa token yang dikonfigurasi route-nya 404 (bukan terbuka senyap) karena metrik yang tidak terautentikasi membocorkan nama key dan bentuk trafik.
+  - `X-Request-Id` dari T-02 mengalir ke `tool_calls.request_id`, log, dan respons — satu ID menelusuri panggilan dari klien sampai upstream.
+  - **Bug nyata yang diperbaiki:** instance pool bersama dibuat saat impor modul → parsing config terjadi di load time, sehingga `bun run db:migrate` dan pengimpor lain mensyaratkan env lengkap. Kini lazy; diverifikasi migrate jalan dengan env minimal.
+  - `/metrics` diverifikasi pada build produksi dengan klien nyata: 401 tanpa/salah token, counter dan gauge muncul setelah panggilan nyata.
+
 
 ---
 
@@ -519,4 +538,5 @@ Release : T-42 → T-43 → T-44   |   V1.1: T-45 (T-32,T-38), T-46 (T-40,T-43) 
 | 2026-09-21 | ✅ T-16, T-17 & T-18 selesai (`752af50`) — gateway berfungsi end-to-end; e2e menemukan 2 bug serius (retry timeout yang tidak aman, onclose transport basi); 316 test hijau |
 | 2026-09-21 | ✅ T-21, T-23 & T-22 selesai (`e626d81`) — API key, rate limit, batas autentikasi `/mcp`; 371 test hijau |
 | 2026-09-21 | 🔎 Uji asap produksi (`3f3b8a9`): klien MCP nyata berhasil memakai gateway; menemukan entrypoint tidak memuat snapshot registry (semua kunci `no-profile`) — 300+ tes tidak bisa menangkapnya karena tes selalu menulis lewat registry di proses yang sama |
+| 2026-09-21 | ✅ T-24, T-25 & T-26 selesai (`0cad9f0` + audit) — modul governance lengkap; metrik terverifikasi pada build produksi; 392 test hijau |
 | 2026-09-21 | ⚠️ File task sempat terpotong setelah T-19 (skrip pembaruan status memanggang ekor file di commit `e9303fb`). Dipulihkan dari `17bfaec` dan digabung ulang per blok `### T-xx`; 48 blok utuh. pelajaran: skrip penulisan dokumen harus memverifikasi jumlah blok sebelum & sesudah |
