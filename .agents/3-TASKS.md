@@ -91,9 +91,17 @@
 
 ### T-06: Upstream stdio (spawn + handshake)
 - **Deskripsi:** `upstream/stdio.ts` memakai `StdioClientTransport`: spawn dengan env hasil sanitization (hanya `PATH/HOME/LANG/NODE_ENV/TMPDIR` + env yang dipetakan eksplisit via `env_refs`), `cwd` opsional, handshake `initialize` (timeout), capture `serverInfo`/`capabilities`/`tools_count`, tangani child exit → status `down` + `last_error`, auto-restart dengan backoff. Env wajib hilang → status `unconfigured` (tanpa spawn).
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-05 · **Estimasi:** 6h
-- **File:** `src/lib/server/upstream/stdio.ts`, `tests/fixtures/echo-mcp-server.ts`, `tests/integration/stdio-upstream.test.ts`
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-05 · **Estimasi:** 6h
+- **File:** `src/lib/server/upstream/{types,stdio,restart}.ts`, `tests/fixtures/echo-mcp-server.ts`, `tests/integration/stdio-upstream.test.ts`
 - **Acceptance:** Fixture MCP server (stdio) tersambung, `tools/list` berisi tool fixture; `MCPGW_MASTER_KEY` tidak terlihat oleh child (diverifikasi lewat fixture yang echo env); child dibunuh → status `down`, restart ≤ backoff.
+- **Catatan implementasi (2026-09-21):**
+  - `UpstreamHandle` = kontrak tunggal untuk stdio + remote → pool/health/gateway tidak bercabang sesuai transport.
+  - **Self-heal:** setiap jalur request memanggil `ensureAlive()`; anak yang mati di antar-call di-respawn (backoff + `UpstreamCoolingDownError` saat belum boleh respawn) → crash = 1 call terlambat, bukan upstream mati permanen.
+  - stderr anak → ring buffer 40 baris yang sudah diredaksi, muncul di halaman detail upstream.
+  - `close({graceMs})` menunggu `inFlight` selesai (BR-12); `graceMs: 0` memutus call yang berjalan.
+  - Fakta SDK penting: `Protocol.connect()` **menggabungkan** `transport.onclose` yang sudah ada (jadi handler kita tetap jalan), dan `_stderrStream` tersedia sejak konstruksi (bisa di-attach sebelum `connect`).
+  - Fakta MCP penting: exception di handler upstream → hasil `isError:true`, **bukan** error transport — retry T-16 hanya untuk `UpstreamTransportError` (`explode` vs `suicide` di fixture).
+  - Test script memakai `--timeout 20000` karena uji crash/respawn butuh lebih dari 5 s default. Commit `f9a18c7`.
 
 ### T-07: Upstream remote HTTP + SSRF guard
 - **Deskripsi:** `upstream/remote-http.ts` dengan `StreamableHTTPClientTransport` (atau varian Web-standard) + `ssrfFetch` sebagai `fetch`; auth header dari `headers_ref`; `TLS verify` toggle; handshake & capability capture; timeout connect 5 s; dukung SSE resume via `Last-Event-ID` bila upstream mengirimnya.
@@ -406,3 +414,4 @@ Release : T-42 → T-43 → T-44   |   V1.1: T-45 (T-32,T-38), T-46 (T-40,T-43) 
 | 2026-09-21 | ✅ T-03 selesai (`74fa48f`) — config Zod strict/lenient + event bus + `.env.example` lengkap |
 | 2026-09-21 | ✅ T-04 selesai (`99ad3d7`) — 14 tabel + migrasi + seed + backup; **test runner pindah ke `bun:test`** (vitest tidak bisa akses `bun:sqlite`) |
 | 2026-09-21 | ✅ T-05 selesai (`9b386b1`) — vault AES-GCM, env-resolve, redact, SSRF guard; 128 test hijau |
+| 2026-09-21 | ✅ T-06 selesai (`f9a18c7`) — transport stdio + kontrak `UpstreamHandle` + FailureTracker; 151 test hijau |
