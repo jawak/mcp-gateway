@@ -12,7 +12,8 @@
  */
 import { randomUUID } from 'node:crypto';
 import { json } from './lib/server/http/bridge.ts';
-import { clientIp, runtime } from './lib/server/runtime.ts';
+import { clientIp } from './lib/server/http/forwarded.ts';
+import { getConfig } from './lib/server/config.ts';
 import { status, uptimeSeconds } from './lib/server/observability/status.ts';
 
 /** Everything downstream (SvelteKit, MCP handlers) may need per request. */
@@ -33,12 +34,12 @@ export type RouterDeps = {
 const MCP_METHODS = ['POST', 'GET', 'DELETE'];
 
 export function createFetchHandler(deps: RouterDeps): (request: Request) => Promise<Response> {
-	const {
-		sveltekit,
-		version = runtime.version,
-		maxBodyBytes = runtime.maxBodyBytes,
-		trustProxy = runtime.trustProxy
-	} = deps;
+	const { sveltekit } = deps;
+	// Config is only consulted for values the caller did not provide, so tests
+	// and embedders can build a router without any environment variables.
+	const version = deps.version ?? getConfig().version;
+	const maxBodyBytes = deps.maxBodyBytes ?? getConfig().maxBodyBytes;
+	const trustProxy = deps.trustProxy ?? getConfig().trustProxy;
 
 	return async function handle(request: Request): Promise<Response> {
 		const requestId = request.headers.get('x-request-id') ?? randomUUID();

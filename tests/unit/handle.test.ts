@@ -13,6 +13,7 @@ function router(
 			(async (request) =>
 				new Response(`sveltekit:${new URL(request.url).pathname}`, { status: 200 })),
 		version: '0.0.1-test',
+		trustProxy: true,
 		maxBodyBytes: overrides.maxBodyBytes ?? 1_048_576
 	});
 }

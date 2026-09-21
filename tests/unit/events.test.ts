@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import { EventBus } from '../../src/lib/server/registry/events';
-import { clientIp } from '../../src/lib/server/runtime';
+import { clientIp } from '../../src/lib/server/http/forwarded';
 
 describe('EventBus', () => {
 	test('delivers typed payloads to subscribers', async () => {

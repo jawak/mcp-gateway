@@ -24,10 +24,25 @@ import {
 } from '../lib/server/http/bridge.ts';
 import { serveStatic } from '../lib/server/http/static.ts';
 import { events } from '../lib/server/registry/events.ts';
-import { runtime } from '../lib/server/runtime.ts';
+import { ConfigError, loadConfig, type Config } from '../lib/server/config.ts';
 import { logger } from '../lib/server/observability/logger.ts';
 
 const log = logger.child({ component: 'server' });
+
+/** Fail fast: a misconfigured gateway must not start half-alive. */
+let config: Config;
+try {
+	config = loadConfig();
+} catch (error) {
+	if (error instanceof ConfigError) {
+		console.error(error.message);
+		process.exit(1);
+	}
+	throw error;
+}
+if (config.masterKeyIsEphemeral) {
+	log.warn('secrets sealed in this process will not survive a restart (MCPGW_MASTER_KEY unset)');
+}
 
 type SvelteKitServer = {
 	init: (opts: {
@@ -72,7 +87,7 @@ async function createApp(): Promise<() => Promise<void>> {
 		env: process.env as Record<string, string>,
 		read: (file) => Bun.file(path.join(clientDir, file)) as unknown as ReadableStream
 	});
-	log.info({ root, version: runtime.version }, 'sveltekit server initialised');
+	log.info({ root, version: config.version }, 'sveltekit server initialised');
 
 	const handleFetch = createFetchHandler({
 		sveltekit: async (request, context) => {
@@ -80,15 +95,15 @@ async function createApp(): Promise<() => Promise<void>> {
 			if (staticResponse) return staticResponse;
 			return app.respond(request, { getClientAddress: () => context.clientAddress });
 		},
-		version: runtime.version,
-		maxBodyBytes: runtime.maxBodyBytes
+		version: config.version,
+		maxBodyBytes: config.maxBodyBytes
 	});
 
 	const server = http.createServer(async (req, res) => {
 		try {
 			const request = await toWebRequest(req, {
-				trustProxy: runtime.trustProxy,
-				maxBodyBytes: runtime.maxBodyBytes
+				trustProxy: config.trustProxy,
+				maxBodyBytes: config.maxBodyBytes
 			});
 			await writeWebResponse(await handleFetch(request), res);
 		} catch (error) {
@@ -111,7 +126,7 @@ async function createApp(): Promise<() => Promise<void>> {
 				logger.warn('shutdown timeout reached, closing remaining connections');
 				server.closeAllConnections();
 				resolve();
-			}, runtime.gracefulShutdownMs);
+			}, config.gracefulShutdownMs);
 			server.closeIdleConnections();
 			server.close(() => {
 				clearTimeout(hardStop);
@@ -129,12 +144,20 @@ async function createApp(): Promise<() => Promise<void>> {
 
 	await new Promise<void>((resolve, reject) => {
 		server.once('error', reject);
-		server.listen(runtime.port, runtime.host, () => {
+		server.listen(config.port, config.host, () => {
 			server.off('error', reject);
 			resolve();
 		});
 	});
-	log.info({ host: runtime.host, port: runtime.port }, 'gateway listening');
+	log.info(
+		{
+			host: config.host,
+			port: config.port,
+			origin: config.origin,
+			env: config.isProduction ? 'production' : 'development'
+		},
+		'gateway listening'
+	);
 	return close;
 }
 

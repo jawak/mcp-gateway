@@ -9,11 +9,12 @@
  *   - retention + backup→ T-46
  */
 import { events } from '../lib/server/registry/events.ts';
-import { runtime } from '../lib/server/runtime.ts';
+import { getConfig } from '../lib/server/config.ts';
 import { logger } from '../lib/server/observability/logger.ts';
 
 const log = logger.child({ component: 'worker' });
-const healthIntervalMs = Number.parseInt(process.env.MCPGW_HEALTH_INTERVAL_S ?? '30', 10) * 1000;
+const config = getConfig();
+const healthIntervalMs = config.healthIntervalMs;
 
 let ticks = 0;
 const timer = setInterval(() => {
@@ -37,6 +38,6 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 log.info(
-	{ health_interval_ms: healthIntervalMs, data_dir: runtime.dataDir, version: runtime.version },
+	{ health_interval_ms: healthIntervalMs, data_dir: config.dataDir, version: config.version },
 	'worker started'
 );

@@ -19,6 +19,9 @@ export const logger = pino({
 		paths: [
 			'MCPGW_MASTER_KEY',
 			'*.MCPGW_MASTER_KEY',
+			'MCPGW_ADMIN_PASSWORD',
+			'cookieSecret',
+			'masterKey',
 			'password',
 			'*.password',
 			'headers.authorization',
