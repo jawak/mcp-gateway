@@ -50,21 +50,40 @@
 
 ### T-03: Config loader + logger
 - **Deskripsi:** `lib/server/config.ts` memuat + validasi env dengan Zod (semua var di Tech Spec Bagian 5, termasuk default), fail-fast dengan pesan jelas; `observability/logger.ts` (pino, pretty di dev, redaction hook dari T-04); `version` dari `package.json`; `registry/events.ts` — event bus in-memory bertipe (publish/subscribe + `close()`) yang dipakai lintas modul (`upstream.changed`, `profile.changed`, `health.changed`, `key.revoked`).
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-02 · **Estimasi:** 3h
-- **File:** `src/lib/server/config.ts`, `src/lib/server/observability/logger.ts`, `src/lib/server/registry/events.ts`, `.env.example`, `tests/unit/config.test.ts`, `tests/unit/events.test.ts`
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-02 · **Estimasi:** 3h
+- **File:** `src/lib/server/config.ts`, `src/lib/server/observability/logger.ts`, `src/lib/server/registry/events.ts`, `src/lib/server/http/forwarded.ts`, `.env.example`, `tests/unit/config.test.ts`, `tests/unit/events.test.ts`
 - **Acceptance:** Boot tanpa `MCPGW_MASTER_KEY` → error eksplisit dan exit non-zero; log berisi `requestId`; `MCPGW_MASTER_KEY` tidak pernah muncul di output log; subscriber event menerima payload bertipe dan unsubscribe berfungsi.
+- **Catatan implementasi (2026-09-21):**
+  - `loadConfig()` agregat semua error dalam satu `ConfigError` (operator memperbaiki `.env` sekali jalan), strict saat `NODE_ENV=production`, lenient di dev (kunci ephemeral + warning keras) agar `bun run dev` tetap jalan.
+  - `MCPGW_COOKIE_SECRET` diturunkan dari master key via HKDF bila tidak di-set; `masterKeyVersion` disiapkan untuk re-seal (T-46).
+  - Event bus memakai `Map<EventName, Set<...>>` (tipe generik per-event tidak bisa disimpan di object literal tanpa cast).
+  - `runtime.ts` dihapus → konfigurasi dari `config.ts`, IP client ke `http/forwarded.ts`.
+  - Verifikasi: `NODE_ENV=production bun build/server.js` tanpa key → pesan jelas + **exit code 1**. Commit `74fa48f`.
 
 ### T-04: Schema DB, migrasi, seed
 - **Deskripsi:** Drizzle schema lengkap sesuai Tech Spec Bagian 2 (14 tabel: `users`, `web_sessions`, `upstreams`, `secret_refs`, `upstream_health`, `profiles`, `profile_upstreams`, `api_keys`, `mcp_sessions`, `tool_calls`, `usage_hourly`, `audit_log`, `kv`, `templates_applied`) + index strategy. Koneksi `bun:sqlite` (WAL, `busy_timeout=5000`, FK on), `migrate.ts` (buat folder data, catat `kv.schema_version`), `seed.ts` bootstrap admin dari env, `ids.ts` (UUIDv7), `shared/schemas.ts` (Zod untuk upstream/profile/key/manifest), `scripts/backup.ts`.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-03 · **Estimasi:** 8h
-- **File:** `src/lib/server/db/{index,schema,migrate,seed}.ts`, `src/lib/shared/{ids,schemas}.ts`, `drizzle.config.ts`, `drizzle/0000_*.sql`, `scripts/backup.ts`, `tests/unit/ids.test.ts`
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-03 · **Estimasi:** 8h
+- **File:** `src/lib/server/db/{index,schema,migrate,seed}.ts`, `src/lib/shared/{ids,time}.ts`, `src/lib/server/security/password.ts`, `drizzle.config.ts`, `drizzle/0000_init.sql`, `scripts/{migrate,backup}.ts`, `tests/unit/ids.test.ts`, `tests/integration/db.test.ts`
 - **Acceptance:** `bun run db:generate && bun run db:migrate` membuat `./data/mcpgw.db` berisi semua tabel + index; admin bootstrap terbuat; `bun run db:migrate` kedua kali no-op; FK `ON DELETE` teruji di test.
+- **Catatan implementasi (2026-09-21):**
+  - 14 tabel + composite PK `profile_upstreams(profile_id, upstream_id)` dan `usage_hourly(bucket_hour, api_key_id, upstream_id, tool)`; `shared/schemas.ts` ditunda ke modul yang membutuhkannya (T-19/T-32) agar tidak menebak bentuk payload.
+  - Migrasi hanya dijalankan proses API saat boot (single writer); worker memanggil `waitForMigrations()` (timeout → error, bukan hang). Versi disimpan di `kv.schema_version`.
+  - Seed idempoten: email dinormalisasi lowercase, password tidak pernah ditimpa, hash argon2id (64MiB/t=3/p=4). `security/password.ts` lebih dulu dikerjakan (dibutuhkan seed); T-05 melengkapi modul security lainnya.
+  - Backup memakai `VACUUM INTO` (aman terhadap writer WAL) + retensi + `kv.last_backup_at`.
+  - **Perubahan tooling:** test runner pindah ke **`bun:test`** karena `bun:sqlite` tidak tersedia di vitest/node; `vitest` di-remove; `verify` script = check+lint+test+build.
+  - Temuan: UUIDv7 8 karakter pertama = timestamp → jangan dipakai sebagai slug unik (test menemukan ini). FK `api_keys.profile_id` bertindak sebagai backstop BR-08 (profil berisi key aktif tidak bisa dihapus). Commit `99ad3d7`.
 
 ### T-05: Vault, env-resolve, password, redact
 - **Deskripsi:** `security/vault.ts` (HKDF-SHA256 + AES-256-GCM, simpan `cipher/iv/tag/key_ver`, rotasi), `env-resolve.ts` (resolve `${ENV}` / `secret:<name>`, deteksi env hilang), `password.ts` (argon2id `m=64MB,t=3,p=4` + dummy verify untuk timing safety), `redact.ts` (pola `ghp_`, `github_pat_`, `xoxb-`, `sk-`, JWT, `Bearer …`), `ssrf.ts` (blokir non-https selain localhost, range privat, `169.254.169.254`, redirect ditolak).
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-04 · **Estimasi:** 6h
-- **File:** `src/lib/server/security/{vault,env-resolve,password,redact,ssrf}.ts`, `tests/unit/{vault,password,redact,ssrf}.test.ts`
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-04 · **Estimasi:** 6h
+- **File:** `src/lib/server/security/{vault,env-resolve,password,redact,ssrf}.ts`, `tests/unit/{vault,redact,env-resolve,ssrf}.test.ts`
 - **Acceptance:** Round-trip seal/open lulus; GCM tag diubah → throw; argon2 verify benar/salah benar; `redact` menutup semua pola test; `ssrfFetch` menolak `http://`, `127.0.0.1`, `169.254.169.254` dan mengizinkan `https://api.github.com`.
+- **Catatan implementasi (2026-09-21):**
+  - Vault: AES-256-GCM, IV 12 byte acak per seal, subkey HKDF per `keyVer` → tamper/wrong-key → `VaultError('auth-failed')`; input rusak → `VaultError('malformed')`; `masterKeyId()` untuk audit rotasi.
+  - Env refs: `${VAR}` | `secret:<name>` | literal; ref non-eksak (`prefix-${HOST}`) dianggap literal, bukan lookup diam-diam; ref gagal → `missing[]` (upstream jadi `unconfigured`, gateway tetap hidup). `baseProcessEnv()` membatasi env child ke 8 nama non-secret.
+  - Redact: 15 pola kredensial + masking by-key; pola `assignment` mempertahankan nama key agar log tetap berguna; `findSecretLike()` untuk gerbang import manifest (BR-09).
+  - SSRF: https-only (loopback dikecualikan untuk dev), tolak kredensial di URL, resolve DNS lalu tolak bila **salah satu** jawaban loopback/private/link-local(169.254.169.254)/multicast, `redirect: 'error'`, `AbortSignal.timeout`. Resolver bisa di-inject (test offline deterministik). `createSsrfSafeFetch()` cocok dengan tipe `FetchLike` SDK → T-07 tidak perlu cast.
+  - Known limitation (didokumentasikan di kode): TOCTOU DNS rebinding antara validasi dan request → perbaikan pinning IP masuk v2. Commit `9b386b1`.
 
 ---
 
@@ -384,3 +403,6 @@ Release : T-42 → T-43 → T-44   |   V1.1: T-45 (T-32,T-38), T-46 (T-40,T-43) 
 | 2026-09-21 | Event bus dipindah ke T-03; T-23/T-24 ditukar agar dependensi terurut topologis; jalur kritis & matriks dependensi dikoreksi; total jam V1.0 = 229 |
 | 2026-09-21 | ✅ T-01 selesai (commit `cba6a7e`) — semua gate hijau; catatan penting: `svelte.config.js` tidak dibuat oleh sv 0.17, adapter di `vite.config.ts` |
 | 2026-09-21 | ✅ T-02 selesai (commit `11b4449`) — **Tech Spec dikoreksi**: `Bun.serve` ≠ kompatibel handler `node:http` (pakai node:http + bridge), dan SvelteKit pakai `Server.respond()` bukan `.render()` |
+| 2026-09-21 | ✅ T-03 selesai (`74fa48f`) — config Zod strict/lenient + event bus + `.env.example` lengkap |
+| 2026-09-21 | ✅ T-04 selesai (`99ad3d7`) — 14 tabel + migrasi + seed + backup; **test runner pindah ke `bun:test`** (vitest tidak bisa akses `bun:sqlite`) |
+| 2026-09-21 | ✅ T-05 selesai (`9b386b1`) — vault AES-GCM, env-resolve, redact, SSRF guard; 128 test hijau |
