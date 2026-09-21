@@ -11,7 +11,6 @@ import { parseEnvLines, rowsToRefs } from '$lib/server/registry/env-form';
 
 import { listSecrets, putSecret, secretExists } from '$lib/server/governance/secrets';
 import { testUpstream } from '$lib/server/governance/upstream-test';
-import { getUpstreamPool } from '$lib/server/upstream/pool';
 import { getDb } from '$lib/server/db/index';
 import { upstreamHealth } from '$lib/server/db/schema';
 
@@ -30,11 +29,8 @@ export const load = (async ({ params }) => {
 		})
 		.filter((entry): entry is NonNullable<typeof entry> => entry !== null);
 
-	const live = getUpstreamPool().peek(record.slug);
-
 	return {
 		record,
-		diagnostics: live?.diagnostics() ?? null,
 		scopes,
 		secrets: listSecrets(),
 		// which references are currently unresolvable: the reason for `unconfigured`
@@ -151,7 +147,7 @@ export const actions = {
 		}
 
 		// a config change can make a previously-working upstream dead, so re-probe
-		await testUpstream(params.slug, getUpstreamPool(), actor);
+		await testUpstream(params.slug, actor);
 		throw redirect(303, `/admin/upstreams/${params.slug}?saved=1`);
 	},
 
@@ -167,7 +163,7 @@ export const actions = {
 	},
 
 	check: async ({ params, locals, getClientAddress }) => {
-		const result = await testUpstream(params.slug, getUpstreamPool(), {
+		const result = await testUpstream(params.slug, {
 			actorId: locals.user?.id ?? null,
 			ip: getClientAddress()
 		});

@@ -48,7 +48,13 @@ export type UpstreamRecord = {
 	/** Newest failure text, so a list page can explain an unconfigured badge. */
 	lastError?: string | null;
 	/** Last probe outcome, e.g. `{ state: 'down', checkedAt, error }`. */
-	status?: { state?: string; checkedAt?: string; error?: string } | null;
+	status?: {
+		state?: string;
+		checkedAt?: string;
+		error?: string;
+		toolNames?: string[];
+		server?: { name: string; version?: string } | null;
+	} | null;
 };
 
 export type UpstreamStatusKind = 'healthy' | 'degraded' | 'down' | 'unconfigured';

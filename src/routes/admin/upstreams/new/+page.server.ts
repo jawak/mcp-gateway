@@ -9,7 +9,6 @@ import {
 import { normaliseRef, parseEnvLines, rowsToRefs } from '$lib/server/registry/env-form';
 import { putSecret, listSecrets } from '$lib/server/governance/secrets';
 import { testUpstream } from '$lib/server/governance/upstream-test';
-import { getUpstreamPool } from '$lib/server/upstream/pool';
 import { getTemplate, listTemplates, planInstall } from '$lib/server/templates';
 import type { HttpConnection, StdioConnection } from '$lib/server/upstream/types';
 
@@ -182,7 +181,7 @@ async function finish(
 	id: string,
 	actor: { actorId: string | null; ip: string | null }
 ): Promise<never> {
-	const test = await testUpstream(slug, getUpstreamPool(), actor);
+	const test = await testUpstream(slug, actor);
 	if (!test.ok) {
 		setUpstreamEnabled(id, false, actor);
 		throw redirect(

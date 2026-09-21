@@ -33,6 +33,8 @@ export type CallRecord = {
 	resBytes?: number;
 	error?: string | null;
 	payload?: { arguments?: unknown; result?: unknown };
+	/** Defaults to now; backfills and tests may place a row in time. */
+	calledAt?: string;
 	db?: Db;
 };
 
@@ -87,7 +89,7 @@ export function recordCall(entry: CallRecord): void {
 								})
 							} as Record<string, unknown>)
 						: null,
-				calledAt: nowIso()
+				calledAt: entry.calledAt ?? nowIso()
 			})
 			.run();
 	} catch (error) {

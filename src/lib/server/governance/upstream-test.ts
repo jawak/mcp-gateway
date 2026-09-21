@@ -9,8 +9,9 @@
  * nothing useful.
  */
 import { getUpstreamById } from '../registry/index.ts';
-import type { UpstreamPool } from '../upstream/pool.ts';
+import { UpstreamPool } from '../upstream/pool.ts';
 import { resolveEnvRefs, describeMissing } from '../security/env-resolve.ts';
+import { qualify } from '../mcp/namespacing.ts';
 import { openSecretByName } from './secrets.ts';
 import { recordAudit } from '../observability/audit.ts';
 import { getDb, type Db } from '../db/index.ts';
@@ -29,9 +30,17 @@ export type UpstreamTestResult = {
 	message?: string;
 };
 
+/**
+ * Probe an upstream and report what it said.
+ *
+ * The connection is opened and closed by this call rather than taken from the
+ * request pool. Two reasons: the dashboard runs inside the SvelteKit bundle, whose
+ * pool is a *different* object from the entrypoint's, so borrowing from it would
+ * silently create a second set of warm child processes; and a manual check should
+ * measure a cold connect rather than inherit someone else's warmth.
+ */
 export async function testUpstream(
 	slug: string,
-	pool: UpstreamPool,
 	options: { actorId?: string | null; ip?: string | null; requestId?: string | null; db?: Db } = {}
 ): Promise<UpstreamTestResult> {
 	const db = options.db ?? getDb();
@@ -50,17 +59,23 @@ export async function testUpstream(
 	}
 
 	const started = Date.now();
+	const scratch = new UpstreamPool({ maxLive: 1 });
 	try {
-		const handle = await pool.get({ ...record, enabled: true });
+		const handle = await scratch.get({ ...record, enabled: true });
 		const [tools, resources, prompts] = await Promise.all([
 			handle.listTools({ timeoutMs: Math.min(record.timeoutMs, 20_000) }),
 			handle.listResources().catch(() => ({ resources: [] })),
 			handle.listPrompts().catch(() => ({ prompts: [] }))
 		]);
 		const latencyMs = Date.now() - started;
+		await scratch.closeAll(1_000);
 		persistStatus(db, record.id, 'healthy', null, {
 			toolsCount: tools.tools.length,
-			caps: handle.diagnostics().capabilities ?? null
+			caps: handle.diagnostics().capabilities ?? null,
+			// the qualified names, kept so the profile editor can preview a filter
+			// against the names the gateway will really serve
+			toolNames: tools.tools.map((tool) => qualify(record.slug, tool.name)),
+			server: handle.diagnostics().serverInfo ?? null
 		});
 		// a connection that works but takes half the timeout deserves a warning:
 		// that is where user-visible timeouts come from
@@ -77,6 +92,7 @@ export async function testUpstream(
 		};
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
+		await scratch.closeAll(1_000).catch(() => undefined);
 		persistStatus(db, record.id, 'down', message);
 		audit(options, record.slug, 'down', 0);
 		return { ok: false, status: 'down', message, latencyMs: Date.now() - started };
@@ -94,15 +110,27 @@ function persistStatus(
 	id: string,
 	status: UpstreamTestResult['status'],
 	error: string | null,
-	extra: { toolsCount?: number; caps?: Record<string, unknown> | null } = {}
+	extra: {
+		toolsCount?: number;
+		caps?: Record<string, unknown> | null;
+		toolNames?: string[];
+		server?: { name: string; version?: string } | null;
+	} = {}
 ): void {
 	try {
 		db.update(upstreams)
 			.set({
-				status: { state: status, checkedAt: nowIso(), ...(error ? { error } : {}) },
+				status: {
+					state: status,
+					checkedAt: nowIso(),
+					...(error ? { error } : {}),
+					...(extra.toolNames ? { toolNames: extra.toolNames } : {}),
+					...(extra.server ? { server: extra.server } : {})
+				},
 				lastError: error,
 				...(extra.toolsCount !== undefined ? { toolsCount: extra.toolsCount } : {}),
 				...(extra.caps !== undefined ? { caps: extra.caps } : {}),
+				...(extra.toolNames !== undefined ? { toolNames: extra.toolNames } : {}),
 				updatedAt: nowIso()
 			} as never)
 			.where(eq(upstreams.id, id))

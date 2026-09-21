@@ -148,7 +148,7 @@
 	</Card>
 
 	<p class="text-xs text-zinc-400">
-		Live pooled connections: {data.live}. Health is refreshed by the worker; force a check from an
+		Live sessions: {data.liveSessions}. Health is refreshed by the worker; force a check from an
 		upstream page.
 		{#if data.healthz.last_health_sweep}
 			Last sweep {new Date(String(data.healthz.last_health_sweep)).toLocaleTimeString()}.

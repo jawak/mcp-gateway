@@ -14,7 +14,7 @@
 		<div>
 			<h1 class="text-lg font-semibold">Upstreams</h1>
 			<p class="text-sm text-zinc-500">
-				{data.rows.length} configured · {data.live.live} connection{data.live.live === 1 ? '' : 's'} pooled
+				{data.rows.length} configured
 			</p>
 		</div>
 		<div class="flex gap-2">

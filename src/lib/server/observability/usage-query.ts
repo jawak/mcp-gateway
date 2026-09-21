@@ -11,7 +11,7 @@
  */
 import { and, desc, eq, gte, lt, sql, type SQL } from 'drizzle-orm';
 import { getDb, type Db } from '../db/index.ts';
-import { apiKeys, toolCalls, upstreams, usageHourly } from '../db/schema.ts';
+import { apiKeys, mcpSessions, toolCalls, upstreams, usageHourly } from '../db/schema.ts';
 import { dayBucket } from '../../shared/time.ts';
 
 export type CallLogRow = {
@@ -357,3 +357,20 @@ export function callsToCsv(rows: CallLogRow[]): string {
 }
 
 export { dayBucket };
+
+/** Live MCP sessions across processes: read from the database, not process memory. */
+export function liveSessionCount(db: Db = getDb()): number {
+	return (
+		db
+			.select({ value: sql<number>`count(*)` })
+			.from(mcpSessions)
+			.where(
+				and(sql`${mcpSessions.closedAt} is null`, gte(mcpSessions.lastSeenAt, minutesAgoIso(5)))
+			)
+			.all()[0]?.value ?? 0
+	);
+}
+
+function minutesAgoIso(minutes: number): string {
+	return new Date(Date.now() - minutes * 60_000).toISOString();
+}

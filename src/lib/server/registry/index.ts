@@ -11,7 +11,7 @@
  */
 import { and, count, eq, inArray } from 'drizzle-orm';
 import { getDb, type Db } from '../db/index.ts';
-import { apiKeys, profileUpstreams, profiles, upstreams } from '../db/schema.ts';
+import { apiKeys, kv, profileUpstreams, profiles, upstreams } from '../db/schema.ts';
 import { toUpstreamRecord } from '../upstream/health.ts';
 import { uuidv7 } from '../../shared/ids.ts';
 import { isPast, nowIso } from '../../shared/time.ts';
@@ -94,6 +94,53 @@ export type RegistrySnapshot = {
 
 let snapshot: RegistrySnapshot = emptySnapshot();
 
+/**
+ * The snapshot is a cache, not the source of truth.
+ *
+ * Two module instances exist by construction — the Bun entrypoint bundle and the
+ * SvelteKit server bundle each get their own copy of this module, and the worker is
+ * a separate process entirely. So invalidation cannot rely on same-process events:
+ * every write bumps `kv.config_version`, and any reader that sees a new version
+ * rebuilds. Version checks are one indexed row, read at most every STALE_MS.
+ */
+const CONFIG_VERSION_KEY = 'config_version';
+const STALE_MS = 250;
+let seenVersion = -1;
+let checkedAt = 0;
+
+function currentConfigVersion(db: Db): number {
+	const row = db.select().from(kv).where(eq(kv.key, CONFIG_VERSION_KEY)).get();
+	return row ? Number.parseInt(row.value, 10) || 0 : 0;
+}
+
+/** A local write: bump the shared version, then rebuild our own cache. */
+function commitWrite(db: Db): void {
+	bumpConfigVersion(db);
+	reload(db);
+}
+
+export function bumpConfigVersion(db: Db = getDb()): void {
+	const next = currentConfigVersion(db) + 1;
+	db.insert(kv)
+		.values({ key: CONFIG_VERSION_KEY, value: String(next) })
+		.onConflictDoUpdate({ target: kv.key, set: { value: String(next) } })
+		.run();
+	seenVersion = next;
+	checkedAt = Date.now();
+}
+
+/** Reload if another process or bundle changed the configuration. */
+function refreshIfStale(db: Db): void {
+	const now = Date.now();
+	if (now - checkedAt < STALE_MS) return;
+	checkedAt = now;
+	const version = currentConfigVersion(db);
+	if (version !== seenVersion) {
+		seenVersion = version;
+		reload(db);
+	}
+}
+
 function emptySnapshot(): RegistrySnapshot {
 	return {
 		upstreamsById: new Map(),
@@ -144,6 +191,8 @@ export function reload(db: Db = getDb()): RegistrySnapshot {
 
 	snapshot = { upstreamsById, upstreamsBySlug, profilesById, generatedAt: nowIso() };
 	status.liveUpstreams = [...upstreamsById.values()].filter((record) => record.enabled).length;
+	seenVersion = currentConfigVersion(db);
+	checkedAt = Date.now();
 	return snapshot;
 }
 
@@ -162,19 +211,22 @@ export function ensureLoaded(db: Db = getDb()): RegistrySnapshot {
 }
 
 export function listUpstreams(db: Db = getDb()): UpstreamRecord[] {
-	reload(db);
+	refreshIfStale(db);
 	return [...getSnapshot().upstreamsById.values()];
 }
 
 export function getUpstreamBySlug(slug: string): UpstreamRecord | undefined {
+	refreshIfStale(getDb());
 	return snapshot.upstreamsBySlug.get(slug);
 }
 
 export function getUpstreamById(id: string): UpstreamRecord | undefined {
+	refreshIfStale(getDb());
 	return snapshot.upstreamsById.get(id);
 }
 
 export function getProfile(id: string): CachedProfile | undefined {
+	refreshIfStale(getDb());
 	return snapshot.profilesById.get(id);
 }
 
@@ -186,6 +238,8 @@ export function listProfiles(): CachedProfile[] {
 export function scopeForProfile(profileId: string): ScopeEntry[] {
 	return getProfile(profileId)?.links ?? [];
 }
+
+/** Force a rebuild; also used right after a local write. */
 
 function audit(
 	action: string,
@@ -259,7 +313,7 @@ export function createUpstream(
 			updatedAt: createdAt
 		})
 		.run();
-	reload(db);
+	commitWrite(db);
 	events.emit('upstream.changed', { slug: input.slug, enabled: input.enabled ?? true });
 	// the definition may reference secrets, so only the shape goes into the audit row
 	audit(
@@ -305,7 +359,7 @@ export function updateUpstream(
 		} as never)
 		.where(eq(upstreams.id, id))
 		.run();
-	reload(db);
+	commitWrite(db);
 	const updated = getUpstreamById(id) as UpstreamRecord;
 	events.emit('upstream.changed', { slug: updated.slug, enabled: updated.enabled });
 	audit(
@@ -331,7 +385,7 @@ export function setUpstreamEnabled(
 	const existing = snapshot.upstreamsById.get(id);
 	if (!existing) throw new RegistryError('not_found', 'upstream not found');
 	db.update(upstreams).set({ enabled, updatedAt: nowIso() }).where(eq(upstreams.id, id)).run();
-	reload(db);
+	commitWrite(db);
 	events.emit('upstream.enabled', { slug: existing.slug, enabled });
 	audit(
 		enabled ? 'upstream.enable' : 'upstream.disable',
@@ -355,7 +409,7 @@ export function deleteUpstream(id: string, writer: Db | WriteOptions = {}): void
 	const existing = snapshot.upstreamsById.get(id);
 	if (!existing) throw new RegistryError('not_found', 'upstream not found');
 	db.delete(upstreams).where(eq(upstreams.id, id)).run();
-	reload(db);
+	commitWrite(db);
 	events.emit('upstream.changed', { slug: existing.slug, enabled: false });
 	audit('upstream.delete', existing.slug, actorId, ip, requestId, {}, db);
 	log.info({ slug: existing.slug }, 'upstream deleted');
@@ -401,7 +455,7 @@ export function createProfile(
 				.run();
 		}
 	});
-	reload(db);
+	commitWrite(db);
 	events.emit('profile.changed', { profileId: id });
 	audit(
 		'profile.create',
@@ -445,7 +499,7 @@ export function setProfileLinks(
 		}
 		tx.update(profiles).set({ updatedAt: nowIso() }).where(eq(profiles.id, profileId)).run();
 	});
-	reload(db);
+	commitWrite(db);
 	events.emit('profile.changed', { profileId });
 	audit(
 		'profile.set_links',
@@ -508,7 +562,7 @@ export function deleteProfile(profileId: string, writer: Db | WriteOptions = {})
 		tx.delete(apiKeys).where(eq(apiKeys.profileId, profileId)).run();
 		tx.delete(profiles).where(eq(profiles.id, profileId)).run();
 	});
-	reload(db);
+	commitWrite(db);
 	events.emit('profile.changed', { profileId });
 	audit('profile.delete', profileName, actorId, ip, requestId, { discardedKeys: history }, db);
 	log.info({ profileId, discardedKeys: history }, 'profile deleted');
@@ -531,7 +585,7 @@ export function updateProfile(
 		.set({ ...(patch as object), updatedAt: nowIso() } as never)
 		.where(eq(profiles.id, profileId))
 		.run();
-	reload(db);
+	commitWrite(db);
 	events.emit('profile.changed', { profileId });
 	audit(
 		'profile.update',
@@ -552,7 +606,7 @@ export function disableUpstreams(ids: string[], db: Db = getDb()): void {
 		.set({ enabled: false, updatedAt: nowIso() })
 		.where(inArray(upstreams.id, ids))
 		.run();
-	reload(db);
+	commitWrite(db);
 	for (const id of ids) {
 		const record = getUpstreamById(id);
 		if (record) events.emit('upstream.enabled', { slug: record.slug, enabled: false });

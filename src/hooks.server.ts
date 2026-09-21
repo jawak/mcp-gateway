@@ -48,6 +48,11 @@ export const handle = (async ({ event, resolve }) => {
 	let response: Response;
 	if (decision.action === 'redirect') {
 		response = new Response(null, { status: 303, headers: { location: decision.to } });
+	} else if (decision.action === 'unauthorized') {
+		response = new Response(JSON.stringify({ error: 'unauthorized', reason: decision.reason }), {
+			status: 401,
+			headers: { 'content-type': 'application/json', 'www-authenticate': 'session' }
+		});
 	} else if (decision.action === 'forbidden') {
 		// drop the dead session so the user is not stuck in a forbidden loop
 		if (resolved) {

@@ -1,76 +1,91 @@
 /**
  * Scheduler entrypoint.
  *
- * Runs as a second process (see deploy/docker-compose.yml) so a slow upstream
- * probe can never delay a request. Jobs:
- *   - health sweep on MCPGW_HEALTH_INTERVAL_S  (T-09)
- *   - idle upstream sweeper                    (T-08)
- *   - session GC, usage rollup, retention, backup → T-13 / T-26 / T-46
+ * Runs as its own process so maintenance can never delay a request: a probe that
+ * hangs on a dead upstream, a retention delete that touches a million rows, and a
+ * snapshot that fsyncs the whole database all belong here, not in the request path.
+ *
+ * Jobs are age-based and idempotent, so a worker that restarts mid-job is safe.
  */
-import { getConfig } from '../lib/server/config.ts';
-import { waitForMigrations } from '../lib/server/db/migrate.ts';
 import { UpstreamPool } from '../lib/server/upstream/pool.ts';
 import { HealthMonitor, loadUpstreamRecords } from '../lib/server/upstream/health.ts';
-import { events } from '../lib/server/registry/events.ts';
+import { effectiveSettings } from '../lib/server/settings.ts';
+import { collectIdleSessions, runRetention } from '../lib/server/observability/retention.ts';
+import { createBackup } from '../lib/server/backup.ts';
+import { rollupHourly } from '../lib/server/observability/usage-query.ts';
 import { logger } from '../lib/server/observability/logger.ts';
+import { metrics } from '../lib/server/observability/metrics.ts';
 
 const log = logger.child({ component: 'worker' });
-const config = getConfig();
 
-// The API process owns migrations; start only once the schema is current.
-const schemaVersion = await waitForMigrations({ timeoutMs: 60_000 });
-log.info({ schema_version: schemaVersion, interval_ms: config.healthIntervalMs }, 'worker started');
-
+// Read settings once per cycle rather than caching forever: the settings page can
+// change them without a restart.
 const pool = new UpstreamPool();
 const health = new HealthMonitor(pool, { listRecords: () => loadUpstreamRecords() });
-pool.startIdleSweeper(60_000);
 
-let sweeping = false;
+let cycle = 0;
+let running = false;
+
 async function tick(): Promise<void> {
-	if (sweeping) {
-		log.warn('previous health sweep still running, skipping this tick');
+	if (running) {
+		log.warn('previous cycle still running, skipping');
 		return;
 	}
-	sweeping = true;
-	const started = Date.now();
+	running = true;
+	cycle += 1;
 	try {
-		const result = await health.sweepAll();
-		if (result.changed.length > 0 || result.checked > 0) {
-			log.info(
-				{
-					checked: result.checked,
-					skipped: result.skipped,
-					changed: result.changed,
-					ms: Date.now() - started
-				},
-				'health sweep finished'
-			);
-		}
+		await health.sweepAll();
+
+		// hourly: roll the previous hour into usage_hourly before detail is pruned
+		if (cycle % 12 === 1) rollupHourly();
+		// hourly: idle sessions and expired web sessions
+		if (cycle % 12 === 5) log.debug(collectIdleSessions(), 'session housekeeping');
+		// ~6 hourly: retention windows
+		if (cycle % 72 === 9) log.info(runRetention(), 'retention applied');
+		// daily: snapshot
+		if (cycle % 288 === 3) log.info(createBackup(), 'snapshot written');
+
+		metrics.refreshGauges({ pool });
 	} catch (error) {
-		log.error({ err: error }, 'health sweep failed');
+		log.error({ err: error }, 'cycle failed');
 	} finally {
-		sweeping = false;
+		running = false;
 	}
 }
 
-const timer = setInterval(() => void tick(), config.healthIntervalMs);
+function schedule(): ReturnType<typeof setInterval> {
+	const intervalMs = Math.max(5_000, effectiveSettings().healthIntervalS * 1000);
+	return setInterval(() => void tick(), intervalMs);
+}
 
-// First sweep immediately so the dashboard has data without waiting 30s.
-await tick();
+let timer = schedule();
+pool.startIdleSweeper(60_000);
 
 let stopping = false;
 function stop(signal: string): void {
 	if (stopping) return;
 	stopping = true;
-	clearInterval(timer);
 	log.info({ signal }, 'worker stopping');
-	events.emit('shutdown', { reason: signal === 'SIGINT' ? 'SIGINT' : 'SIGTERM' });
+	clearInterval(timer);
 	void pool
 		.closeAll(5_000)
-		.catch((error: unknown) => log.error({ err: error }, 'pool shutdown failed'))
+		.catch((error: unknown) => log.warn({ err: error }, 'pool shutdown failed'))
 		.finally(() => process.exit(0));
 }
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 	process.on(signal, () => stop(signal));
 }
+
+// re-read the interval periodically so a settings change takes effect without a restart
+setInterval(() => {
+	const wanted = Math.max(5_000, effectiveSettings().healthIntervalS * 1000);
+	clearInterval(timer);
+	timer = setInterval(() => void tick(), wanted);
+}, 60_000).unref();
+
+log.info(
+	{ interval_ms: Math.max(5_000, effectiveSettings().healthIntervalS * 1000) },
+	'worker started'
+);
+void tick();

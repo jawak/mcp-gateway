@@ -31,7 +31,7 @@ describe('access decisions', () => {
 	test('an anonymous API caller gets 403, not a login page', () => {
 		// a fetch that silently returned HTML would "succeed" and then fail confusingly
 		expect(decideAccess({ pathname: '/api/v1/logs', method: 'GET', user: null })).toEqual({
-			action: 'forbidden',
+			action: 'unauthorized',
 			reason: 'authentication required'
 		});
 	});

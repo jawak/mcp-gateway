@@ -2,7 +2,6 @@ import { redirect, type Actions } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { deleteUpstream, listUpstreams, setUpstreamEnabled } from '$lib/server/registry';
 import { testUpstream } from '$lib/server/governance/upstream-test';
-import { getUpstreamPool } from '$lib/server/upstream/pool';
 import { latestHealthByUpstream } from '$lib/server/upstream/health';
 import { RegistryError } from '$lib/server/registry';
 import { fail } from '@sveltejs/kit';
@@ -30,7 +29,7 @@ export const load = (() => {
 			error: latest?.error ?? record.lastError ?? null
 		};
 	});
-	return { rows, live: getUpstreamPool().stats() };
+	return { rows };
 }) satisfies PageServerLoad;
 
 export const actions = {
@@ -52,7 +51,7 @@ export const actions = {
 	check: async ({ request, locals, getClientAddress }) => {
 		const data = await request.formData();
 		const slug = String(data.get('slug') ?? '');
-		const result = await testUpstream(slug, getUpstreamPool(), {
+		const result = await testUpstream(slug, {
 			actorId: locals.user?.id ?? null,
 			ip: getClientAddress()
 		});

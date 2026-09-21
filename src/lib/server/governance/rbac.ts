@@ -24,6 +24,7 @@ export type AccessSubject = { role: Role; status: UserStatus } | null | undefine
 export type AccessDecision =
 	| { action: 'allow' }
 	| { action: 'redirect'; to: string }
+	| { action: 'unauthorized'; reason: string }
 	| { action: 'forbidden'; reason: string };
 
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -55,7 +56,7 @@ export function decideAccess(input: {
 	// redirected, otherwise a broken fetch "succeeds" with an HTML login page.
 	if (!user) {
 		return isApiPath(pathname, input.apiPaths ?? ['/api/'])
-			? { action: 'forbidden', reason: 'authentication required' }
+			? { action: 'unauthorized', reason: 'authentication required' }
 			: { action: 'redirect', to: `/login?next=${encodeURIComponent(pathname)}` };
 	}
 	if (user.status === 'disabled') {

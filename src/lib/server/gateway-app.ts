@@ -19,6 +19,7 @@ import { UpstreamPool } from './upstream/pool.ts';
 import { rateLimiter, type RateLimiter } from './governance/ratelimit.ts';
 import { limitsForProfile } from '../../middleware/auth.ts';
 import { events } from './registry/events.ts';
+import { listUpstreams } from './registry/index.ts';
 import { getDb } from './db/index.ts';
 import { mcpSessions } from './db/schema.ts';
 import { nowIso } from '../shared/time.ts';
@@ -76,6 +77,18 @@ export function createGatewayApp(options: {
 	const offUpstreamRemoved = events.on('upstream.enabled', ({ slug, enabled }) => {
 		if (enabled) return;
 		void pool.close(slug, { graceMs: 1_000, reason: 'manual' });
+	});
+
+	// Warm the pinned upstreams in the background. Deliberately not awaited: one
+	// slow or broken upstream must not delay the gateway accepting requests, and the
+	// pool retries on first use anyway.
+	void pool.warm(listUpstreams()).then((result) => {
+		if (result.failed.length > 0) {
+			logger.warn(
+				{ failed: result.failed.map((entry) => entry.slug) },
+				'some pinned upstreams did not start'
+			);
+		}
 	});
 
 	return {

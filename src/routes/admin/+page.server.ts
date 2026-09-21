@@ -2,8 +2,8 @@ import type { PageServerLoad } from './$types';
 import { listProfiles, listUpstreams } from '$lib/server/registry';
 import { listApiKeys } from '$lib/server/governance/apikey';
 import { latestHealthByUpstream } from '$lib/server/upstream/health';
-import { overview, topTools } from '$lib/server/observability/usage-query';
-import { getUpstreamPool } from '$lib/server/upstream/pool';
+import { liveSessionCount, overview, topTools } from '$lib/server/observability/usage-query';
+
 import { healthzPayload } from '../../handle';
 
 export const load = (async ({ url }) => {
@@ -40,9 +40,9 @@ export const load = (async ({ url }) => {
 		hasUpstream: upstreams.length > 0,
 		hasProfile: listProfiles().length > 0,
 		hasKey: activeKeys.length > 0,
+		liveSessions: liveSessionCount(),
 		top: topTools(24, 5),
 		endpoint: publicEndpoint(url),
-		live: getUpstreamPool().liveSlugs().length,
 		healthz: healthzPayload('')
 	};
 }) satisfies PageServerLoad;

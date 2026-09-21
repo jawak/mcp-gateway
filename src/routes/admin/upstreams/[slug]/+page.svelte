@@ -155,45 +155,35 @@
 			</p>
 		</Card>
 
-		<Card title="Handshake" description="Reported by the upstream itself">
-			{#if data.diagnostics?.serverInfo}
+		<Card title="Handshake" description="Reported by the upstream at its last probe">
+			{#if data.record.status?.server}
 				<dl class="space-y-1 text-sm">
 					<div class="flex gap-2">
 						<dt class="w-24 text-zinc-500">Server</dt>
-						<dd>{data.diagnostics.serverInfo.name} {data.diagnostics.serverInfo.version ?? ''}</dd>
+						<dd>
+							{data.record.status.server.name}
+							{data.record.status.server.version ?? ''}
+						</dd>
 					</div>
 					<div class="flex gap-2">
 						<dt class="w-24 text-zinc-500">Tools</dt>
 						<dd>{data.record.toolsCount ?? 0}</dd>
 					</div>
-					{#if data.diagnostics.spawnCount !== undefined}
+					{#if data.record.status.checkedAt}
 						<div class="flex gap-2">
-							<dt class="w-24 text-zinc-500">Restarts</dt>
-							<dd>{data.diagnostics.spawnCount}</dd>
+							<dt class="w-24 text-zinc-500">Probed</dt>
+							<dd>{new Date(data.record.status.checkedAt).toLocaleString()}</dd>
 						</div>
 					{/if}
 					<div class="flex gap-2">
 						<dt class="w-24 shrink-0 text-zinc-500">Capabilities</dt>
 						<dd class="font-mono text-xs">
-							{Object.keys(data.diagnostics.capabilities ?? {}).join(', ') || '—'}
+							{Object.keys((data.record.caps ?? {}) as object).join(', ') || '—'}
 						</dd>
 					</div>
 				</dl>
-				{#if data.diagnostics.stderrTail?.length}
-					<details class="mt-3">
-						<summary class="cursor-pointer text-xs text-zinc-500"
-							>Last stderr ({data.diagnostics.stderrTail.length} lines)</summary
-						>
-						<pre
-							class="mt-1 max-h-48 overflow-auto rounded bg-zinc-100 p-2 text-xs dark:bg-zinc-800">{data.diagnostics.stderrTail.join(
-								'\n'
-							)}</pre>
-					</details>
-				{/if}
 			{:else}
-				<p class="text-sm text-zinc-500">
-					No live connection. Run “Check now”, or let a client call a tool from this upstream.
-				</p>
+				<p class="text-sm text-zinc-500">Never contacted. Run “Check now” to probe it.</p>
 			{/if}
 		</Card>
 	</div>
