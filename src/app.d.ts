@@ -1,9 +1,18 @@
 // See https://svelte.dev/docs/kit/types#app.d.ts
-// for information about these interfaces
 declare global {
 	namespace App {
+		interface Locals {
+			/** Authenticated dashboard user, or null when the cookie is absent/expired. */
+			user: {
+				id: string;
+				email: string;
+				role: 'admin' | 'viewer';
+				status: 'active' | 'disabled';
+			} | null;
+			/** Active web session id, used for logout. */
+			sessionId: string | null;
+		}
 		// interface Error {}
-		// interface Locals {}
 		// interface PageData {}
 		// interface PageState {}
 		// interface Platform {}
