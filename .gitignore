@@ -1,0 +1,39 @@
+node_modules
+
+# Output
+.output
+.vercel
+.netlify
+.wrangler
+/.svelte-kit
+/build
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+!.env.example
+!.env.test
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Runtime data (SQLite, backups) — never commit
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Local compose/env overrides
+deploy/.env
+docker-compose.override.yml
+
+# Test & tool artifacts
+/coverage
+/test-results
+playwright-report
+*.log
