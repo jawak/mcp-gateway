@@ -41,6 +41,8 @@ export type UpstreamRecord = {
 	headersRef?: string | null;
 	timeoutMs: number;
 	pin: 'pinned' | 'lazy';
+	/** Capabilities reported by the upstream at handshake time (may be absent). */
+	caps?: Record<string, unknown> | null;
 };
 
 export type UpstreamStatusKind = 'healthy' | 'degraded' | 'down' | 'unconfigured';
@@ -80,6 +82,16 @@ export type UpstreamResource = {
 
 export type ToolListResult = { tools: UpstreamTool[]; nextCursor?: string };
 export type ResourceListResult = { resources: UpstreamResource[]; nextCursor?: string };
+export type ResourceTemplateListResult = {
+	resourceTemplates: Array<{
+		uriTemplate: string;
+		name: string;
+		title?: string;
+		description?: string;
+		mimeType?: string;
+	}>;
+	nextCursor?: string;
+};
 export type PromptListResult = { prompts: UpstreamPrompt[]; nextCursor?: string };
 export type CallToolResult = { content?: unknown; isError?: boolean; structuredContent?: unknown };
 export type ReadResourceResult = { contents: unknown[] };
@@ -112,6 +124,7 @@ export type UpstreamHandle = {
 		options?: CallToolOptions
 	): Promise<CallToolResult>;
 	listResources(options?: { timeoutMs?: number }): Promise<ResourceListResult>;
+	listResourceTemplates(options?: { timeoutMs?: number }): Promise<ResourceTemplateListResult>;
 	readResource(uri: string, options?: { timeoutMs?: number }): Promise<ReadResourceResult>;
 	listPrompts(options?: { timeoutMs?: number }): Promise<PromptListResult>;
 	getPrompt(
@@ -154,6 +167,25 @@ export class UpstreamCoolingDownError extends Error {
 		this.name = 'UpstreamCoolingDownError';
 		this.retryAfterMs = retryAfterMs;
 	}
+}
+
+/**
+ * Convert anything a transport threw into an `UpstreamTransportError`.
+ *
+ * The retryability distinction is a safety property, not a performance one:
+ * a dead connection means the request never happened (safe to retry), while a
+ * timeout means the upstream may well have performed the side effect after we
+ * stopped listening — retrying that could send the message or open the PR twice.
+ */
+export function toTransportError(slug: string, error: unknown): UpstreamTransportError {
+	if (error instanceof UpstreamTransportError) return error;
+	const message = error instanceof Error ? error.message : String(error);
+	const code = (error as { code?: string } | undefined)?.code ?? '';
+	const timedOut = /timed? ?out|timeout|ETIMEDOUT|ESOCKETTIMEDOUT|deadline/i.test(
+		`${code} ${message}`
+	);
+	const aborted = (error as { name?: string } | undefined)?.name === 'AbortError';
+	return new UpstreamTransportError(slug, message, !timedOut && !aborted);
 }
 
 export function isStdioConnection(connection: Connection): connection is StdioConnection {

@@ -273,7 +273,8 @@ export function toUpstreamRecord(row: typeof upstreams.$inferSelect): UpstreamRe
 		envRefs: row.envRefs ?? {},
 		headersRef: row.headersRef,
 		timeoutMs: row.timeoutMs,
-		pin: row.pin
+		pin: row.pin,
+		caps: row.caps ?? null
 	};
 }
 

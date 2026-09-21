@@ -22,6 +22,7 @@ import type {
 	PromptListResult,
 	ReadResourceResult,
 	ResourceListResult,
+	ResourceTemplateListResult,
 	StdioConnection,
 	ToolListResult,
 	UpstreamDiagnostics,
@@ -31,7 +32,8 @@ import type {
 import {
 	UnconfiguredUpstreamError,
 	UpstreamCoolingDownError,
-	UpstreamTransportError
+	UpstreamTransportError,
+	toTransportError
 } from './types.ts';
 import { backoffDelayMs } from './restart.ts';
 import { baseProcessEnv, describeMissing, resolveEnvRefs } from '../security/env-resolve.ts';
@@ -118,6 +120,12 @@ export async function connectStdio(options: StdioHandleOptions): Promise<Upstrea
 	let child: ChildLike | undefined;
 	let client: Client | undefined;
 	let lastTransport: StdioClientTransport | undefined;
+	/**
+	 * Spawn generation. The SDK fires `onclose` for a transport it has already
+	 * replaced; without this guard a stale close would push the restart backoff
+	 * forward and make the next call wait for a crash that already recovered.
+	 */
+	let generation = 0;
 	let connected = false;
 	let closing = false;
 	let spawnCount = 0;
@@ -164,6 +172,9 @@ export async function connectStdio(options: StdioHandleOptions): Promise<Upstrea
 	}
 
 	async function spawn(): Promise<void> {
+		// Claim the generation first: the previous transport may still fire onclose
+		// while this one is connecting, and that stale event must not be honoured.
+		const myGeneration = ++generation;
 		const transport = new StdioClientTransport({
 			command: connection.command,
 			args: connection.args ?? [],
@@ -183,6 +194,7 @@ export async function connectStdio(options: StdioHandleOptions): Promise<Upstrea
 			);
 		};
 		transport.onclose = () => {
+			if (myGeneration !== generation) return; // a replaced transport closing late
 			const wasConnected = connected;
 			connected = false;
 			if (closing || !wasConnected) return;
@@ -360,8 +372,8 @@ export async function connectStdio(options: StdioHandleOptions): Promise<Upstrea
 				});
 				return result as CallToolResult;
 			} catch (error) {
-				if (error instanceof UpstreamTransportError) throw error;
-				throw new UpstreamTransportError(record.slug, redactString(messageOf(error)), true);
+				// timeouts and cancellations stay non-retryable (see toTransportError)
+				throw toTransportError(record.slug, error);
 			} finally {
 				inFlight -= 1;
 			}
@@ -375,6 +387,19 @@ export async function connectStdio(options: StdioHandleOptions): Promise<Upstrea
 			});
 			return {
 				resources: result.resources as unknown as ResourceListResult['resources'],
+				nextCursor: result.nextCursor
+			};
+		},
+
+		async listResourceTemplates(listOptions = {}): Promise<ResourceTemplateListResult> {
+			const result = await (
+				await ready()
+			).listResourceTemplates(undefined, {
+				timeout: listOptions.timeoutMs ?? record.timeoutMs
+			});
+			return {
+				resourceTemplates:
+					result.resourceTemplates as unknown as ResourceTemplateListResult['resourceTemplates'],
 				nextCursor: result.nextCursor
 			};
 		},
@@ -439,15 +464,6 @@ type ChildLike = {
 function readChild(transport?: StdioClientTransport): ChildLike | undefined {
 	if (!transport) return undefined;
 	return (transport as unknown as { _process?: ChildLike })._process;
-}
-
-function messageOf(error: unknown): string {
-	if (error instanceof Error) return error.message;
-	try {
-		return JSON.stringify(error);
-	} catch {
-		return String(error);
-	}
 }
 
 /** Redacted snapshot for the dashboard / API responses. */

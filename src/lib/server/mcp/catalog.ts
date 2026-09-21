@@ -21,7 +21,13 @@
  *    the cached set is the upstream truth, the profile rules are applied per call
  *    so a rule change cannot be masked by a warm cache.
  */
-import type { ToolDescriptor, ResourceDescriptor, PromptDescriptor, ListPage } from './backend.ts';
+import type {
+	ToolDescriptor,
+	ResourceDescriptor,
+	ResourceTemplateDescriptor,
+	PromptDescriptor,
+	ListPage
+} from './backend.ts';
 import {
 	build as buildNamespace,
 	NamespacingError,
@@ -148,11 +154,15 @@ export class ToolCatalog {
 		);
 		const descriptors: ResourceDescriptor[] = [];
 		for (const [index, list] of items.entries()) {
-			const upstream = scope[index]?.upstream;
+			const link = scope[index];
+			const upstream = link?.upstream;
 			if (!upstream || !list) continue;
 			for (const resource of list) {
+				const qualified = qualifyUri(upstream.slug, resource.uri);
+				// BR-03 covers resource URIs and prompt names, not just tools
+				if (!isAllowed(qualified, { allow: link?.allowGlobs, deny: link?.denyGlobs })) continue;
 				descriptors.push({
-					uri: qualifyUri(upstream.slug, resource.uri),
+					uri: qualified,
 					name: resource.name,
 					...(resource.title ? { title: resource.title } : {}),
 					...(resource.description ? { description: resource.description } : {}),
@@ -177,11 +187,14 @@ export class ToolCatalog {
 		);
 		const descriptors: PromptDescriptor[] = [];
 		for (const [index, list] of items.entries()) {
-			const upstream = scope[index]?.upstream;
+			const link = scope[index];
+			const upstream = link?.upstream;
 			if (!upstream || !list) continue;
 			for (const prompt of list) {
+				const qualifiedName = qualify(upstream.slug, prompt.name);
+				if (!isAllowed(qualifiedName, { allow: link?.allowGlobs, deny: link?.denyGlobs })) continue;
 				descriptors.push({
-					name: qualify(upstream.slug, prompt.name),
+					name: qualifiedName,
 					...(prompt.title ? { title: prompt.title } : {}),
 					...(prompt.description ? { description: prompt.description } : {}),
 					...(prompt.arguments ? { arguments: prompt.arguments } : {}),
@@ -224,7 +237,59 @@ export class ToolCatalog {
 		return undefined;
 	}
 
-	/** Drop cached tool sets. Called by the registry/health event subscribers. */
+	/**
+	 * Why a name is not visible to this profile: `filtered` means the upstream is
+	 * in scope but the profile's rules hide it, `unknown` means no in-scope
+	 * upstream provides it. The distinction drives the error code the client sees.
+	 */
+	classify(profileId: string, qualifiedName: string): 'allowed' | 'filtered' | 'unknown' {
+		const scope = this.#snapshot().profilesById.get(profileId)?.links ?? [];
+		const link = scope.find((entry) => qualifiedName.startsWith(`${entry.upstream.slug}__`));
+		if (!link) return 'unknown';
+		return isAllowed(qualifiedName, { allow: link.allowGlobs, deny: link.denyGlobs })
+			? 'allowed'
+			: 'filtered';
+	}
+
+	/** In-scope upstreams + rules, for capability probing in the backend. */
+	scopeFor(profileId: string): ScopeEntry[] {
+		return this.#snapshot().profilesById.get(profileId)?.links ?? [];
+	}
+
+	async listResourceTemplates(
+		profileId: string,
+		page: { cursor?: string } = {}
+	): Promise<ListPage<ResourceTemplateDescriptor>> {
+		const scope = this.#snapshot().profilesById.get(profileId)?.links ?? [];
+		const items = await this.#fanoutOver(scope, (upstream) =>
+			this.#pool
+				.withHandle(upstream, (handle) => handle.listResourceTemplates())
+				.then((result) => result.resourceTemplates ?? [])
+		);
+		const descriptors: ResourceTemplateDescriptor[] = [];
+		for (const [index, list] of items.entries()) {
+			const link = scope[index];
+			const upstream = link?.upstream;
+			if (!upstream || !list) continue;
+			for (const template of list) {
+				const qualifiedTemplate = qualifyUri(upstream.slug, template.uriTemplate);
+				if (!isAllowed(qualifiedTemplate, { allow: link?.allowGlobs, deny: link?.denyGlobs }))
+					continue;
+				descriptors.push({
+					uriTemplate: qualifiedTemplate,
+					name: template.name,
+					...(template.title ? { title: template.title } : {}),
+					...(template.description ? { description: template.description } : {}),
+					...(template.mimeType ? { mimeType: template.mimeType } : {}),
+					meta: { upstream: upstream.slug }
+				});
+			}
+		}
+		descriptors.sort((a, b) => a.uriTemplate.localeCompare(b.uriTemplate));
+		return this.#paginate(descriptors, page.cursor);
+	}
+
+	/** Drop cached tool sets. Called by the registry/health event event subscribers. */
 	invalidate(slug?: string): void {
 		if (slug) {
 			this.#byUpstream.delete(slug);

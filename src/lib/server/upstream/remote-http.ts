@@ -23,12 +23,13 @@ import type {
 	PromptListResult,
 	ReadResourceResult,
 	ResourceListResult,
+	ResourceTemplateListResult,
 	ToolListResult,
 	UpstreamDiagnostics,
 	UpstreamHandle,
 	UpstreamRecord
 } from './types.ts';
-import { UnconfiguredUpstreamError, UpstreamTransportError } from './types.ts';
+import { UnconfiguredUpstreamError, UpstreamTransportError, toTransportError } from './types.ts';
 import { assertUrlAllowed, createSsrfSafeFetch, type SsrfOptions } from '../security/ssrf.ts';
 import { redactString } from '../security/redact.ts';
 import { getConfig } from '../config.ts';
@@ -277,8 +278,8 @@ export async function connectRemoteHttp(options: RemoteHttpOptions): Promise<Ups
 				});
 				return result as CallToolResult;
 			} catch (error) {
-				if (error instanceof UpstreamTransportError) throw error;
-				throw new UpstreamTransportError(record.slug, redactString(messageOf(error)), true);
+				// timeouts and cancellations stay non-retryable (see toTransportError)
+				throw toTransportError(record.slug, error);
 			} finally {
 				inFlight -= 1;
 			}
@@ -292,6 +293,19 @@ export async function connectRemoteHttp(options: RemoteHttpOptions): Promise<Ups
 			});
 			return {
 				resources: result.resources as unknown as ResourceListResult['resources'],
+				nextCursor: result.nextCursor
+			};
+		},
+
+		async listResourceTemplates(listOptions = {}): Promise<ResourceTemplateListResult> {
+			const result = await (
+				await ready()
+			).listResourceTemplates(undefined, {
+				timeout: listOptions.timeoutMs ?? record.timeoutMs
+			});
+			return {
+				resourceTemplates:
+					result.resourceTemplates as unknown as ResourceTemplateListResult['resourceTemplates'],
 				nextCursor: result.nextCursor
 			};
 		},
@@ -344,13 +358,4 @@ export async function connectRemoteHttp(options: RemoteHttpOptions): Promise<Ups
 
 	await handle.ensureAlive();
 	return handle;
-}
-
-function messageOf(error: unknown): string {
-	if (error instanceof Error) return error.message;
-	try {
-		return JSON.stringify(error);
-	} catch {
-		return String(error);
-	}
 }
