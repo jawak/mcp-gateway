@@ -15,6 +15,11 @@ export type GatewayEvents = {
 	'key.revoked': { keyId: string };
 	'key.suspended': { keyId: string };
 	'session.closed': { sessionId: string; reason: string };
+	'pool.connected': { slug: string; transport: 'stdio' | 'http' };
+	'pool.closed': {
+		slug: string;
+		reason: 'idle' | 'manual' | 'evicted' | 'shutdown' | 'unconfigured';
+	};
 	shutdown: { reason: 'SIGINT' | 'SIGTERM' };
 };
 

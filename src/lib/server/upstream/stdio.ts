@@ -109,7 +109,15 @@ export async function connectStdio(options: StdioHandleOptions): Promise<Upstrea
 
 	const stderrTail: string[] = [];
 	let stderrBuffer = '';
+	/**
+	 * Reference to the current child process. The SDK clears its own reference at
+	 * the start of `close()` and only escalates after a 2 s *unref'd* timer, so we
+	 * keep our own handle and guarantee the process is really gone (an orphaned
+	 * `npx` per reconnect would exhaust the box).
+	 */
+	let child: ChildLike | undefined;
 	let client: Client | undefined;
+	let lastTransport: StdioClientTransport | undefined;
 	let connected = false;
 	let closing = false;
 	let spawnCount = 0;
@@ -181,6 +189,9 @@ export async function connectStdio(options: StdioHandleOptions): Promise<Upstrea
 			options.onStatusChange?.({ kind: 'down', reason: lastError });
 		};
 
+		child = readChild(transport);
+		child = readChild(transport);
+		lastTransport = transport;
 		attachStderr(transport);
 		spawnCount += 1;
 
@@ -191,7 +202,7 @@ export async function connectStdio(options: StdioHandleOptions): Promise<Upstrea
 				`handshake timed out after ${handshakeTimeoutMs}ms`
 			);
 		} catch (error) {
-			await safeClose(nextClient);
+			await safeClose(nextClient, transport);
 			client = undefined;
 			connected = false;
 			const message = redactString(
@@ -219,11 +230,37 @@ export async function connectStdio(options: StdioHandleOptions): Promise<Upstrea
 		options.onStatusChange?.({ kind: 'healthy' });
 	}
 
-	async function safeClose(target: Client | undefined): Promise<void> {
+	async function safeClose(
+		target: Client | undefined,
+		transport?: StdioClientTransport
+	): Promise<void> {
 		try {
 			await target?.close();
 		} catch {
 			/* closing is best-effort; the child is usually already gone */
+		}
+		await ensureChildGone(transport);
+	}
+
+	/** Escalate SIGTERM → SIGKILL until the child is actually reaped. */
+	async function ensureChildGone(transport?: StdioClientTransport): Promise<void> {
+		const proc = child ?? readChild(transport);
+		if (!proc || proc.exitCode !== null || proc.signalCode !== null) return;
+		try {
+			proc.kill('SIGTERM');
+		} catch {
+			return;
+		}
+		const deadline = Date.now() + 1_000;
+		while (Date.now() < deadline) {
+			if (proc.exitCode !== null || proc.signalCode !== null) return;
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		log.warn({ pid: proc.pid }, 'child ignored SIGTERM, sending SIGKILL');
+		try {
+			proc.kill('SIGKILL');
+		} catch {
+			/* already gone */
 		}
 	}
 
@@ -267,7 +304,8 @@ export async function connectStdio(options: StdioHandleOptions): Promise<Upstrea
 			while (inFlight > 0 && Date.now() < deadline) {
 				await new Promise((resolve) => setTimeout(resolve, 25));
 			}
-			await safeClose(client);
+			const closingTransport = lastTransport;
+			await safeClose(client, closingTransport);
 			client = undefined;
 			connected = false;
 			log.info({ spawnCount, inFlightAtClose: inFlight }, 'upstream closed');
@@ -383,6 +421,19 @@ export async function connectStdio(options: StdioHandleOptions): Promise<Upstrea
 
 	await handle.ensureAlive();
 	return handle;
+}
+
+/** Minimal shape of a spawned child, as exposed (privately) by the SDK transport. */
+type ChildLike = {
+	pid?: number;
+	exitCode: number | null;
+	signalCode: number | string | null;
+	kill: (signal?: NodeJS.Signals | number) => boolean;
+};
+
+function readChild(transport?: StdioClientTransport): ChildLike | undefined {
+	if (!transport) return undefined;
+	return (transport as unknown as { _process?: ChildLike })._process;
 }
 
 function messageOf(error: unknown): string {
