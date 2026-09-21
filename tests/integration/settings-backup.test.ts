@@ -18,6 +18,7 @@ import {
 	runRetention
 } from '../../src/lib/server/observability/retention';
 import {
+	backupDir,
 	createBackup,
 	listBackups,
 	pruneBackups,
@@ -222,7 +223,11 @@ describe('snapshots', () => {
 	});
 
 	test('pruneBackups removes files it cannot keep', () => {
-		const stray = path.join(dir, 'backups', 'mcpgw-2000-01-01T00-00-00-000Z.db');
+		// take a snapshot first: it creates the backups directory and gives the
+		// pruner a newest file to keep, so the assertion below is about selection
+		// rather than about ordering between tests
+		const newest = createBackup();
+		const stray = path.join(backupDir(), 'mcpgw-2000-01-01T00-00-00-000Z.db');
 		writeFileSync(stray, 'junk');
 		// pruning orders by mtime, so make this one genuinely ancient
 		const ancient = new Date('2000-01-01T00:00:00Z');
@@ -231,6 +236,8 @@ describe('snapshots', () => {
 		resetSettingsCache();
 		expect(pruneBackups()).toBeGreaterThanOrEqual(1);
 		expect(existsSync(stray)).toBe(false);
+		// the file it must keep is the one it just wrote, not the ancient one
+		expect(existsSync(newest.path)).toBe(true);
 		clearOverride('retentionBackups');
 	});
 });
