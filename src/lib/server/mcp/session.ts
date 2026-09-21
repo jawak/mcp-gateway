@@ -42,8 +42,13 @@ export type GatewaySession = {
 
 export type CloseReason = 'client' | 'revoked' | 'suspended' | 'idle' | 'shutdown' | 'error';
 
+/** How often `last_seen_at` may be written per session (see `#touch`). */
+const SEEN_WRITE_MS = 15_000;
+
 export class SessionRegistry {
 	#byId = new Map<string, GatewaySession>();
+	/** Last database write of `last_seen_at`, per session id. */
+	#seenWrittenAt = new Map<string, number>();
 	#byKey = new Map<string, Set<string>>();
 	#store: SessionStore | undefined;
 	#log;
@@ -74,16 +79,37 @@ export class SessionRegistry {
 	get(id: string | null | undefined): GatewaySession | undefined {
 		if (!id) return undefined;
 		const session = this.#byId.get(id);
-		if (session) {
-			session.lastSeenAt = Date.now();
-			this.#store?.seen(session.id, nowIso());
-		}
+		if (session) this.#touch(session);
 		return session;
+	}
+
+	/**
+	 * Update liveness. The in-memory value is exact; the database write is
+	 * throttled to one per SEEN_WRITE_MS per session.
+	 *
+	 * This matters: the column only feeds the idle collector (minute-level TTL),
+	 * but it sits on the hot path of every MCP request. Unthrottled, 200 concurrent
+	 * requests become 200 serialised UPDATEs on one SQLite connection, which is
+	 * what pushed `tools/list` past its 100 ms budget in the load test. The final
+	 * timestamp is flushed when the session closes.
+	 */
+	#touch(session: GatewaySession): void {
+		const now = Date.now();
+		session.lastSeenAt = now;
+		const lastWritten = this.#seenWrittenAt.get(session.id) ?? 0;
+		if (now - lastWritten < SEEN_WRITE_MS) return;
+		this.#seenWrittenAt.set(session.id, now);
+		this.#store?.seen(session.id, nowIso());
 	}
 
 	/** Remove from the index without releasing (used by the transport callbacks). */
 	#detach(id: string): GatewaySession | undefined {
 		const session = this.#byId.get(id);
+		if (session) {
+			// persist the true last-activity time before the row goes away
+			this.#store?.seen(session.id, nowIso(new Date(session.lastSeenAt)));
+			this.#seenWrittenAt.delete(session.id);
+		}
 		if (!session) return undefined;
 		this.#byId.delete(id);
 		const forKey = this.#byKey.get(session.caller.apiKeyId);

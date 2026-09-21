@@ -22,7 +22,7 @@ import { apiKeys } from '../db/schema.ts';
 import { uuidv7 } from '../../shared/ids.ts';
 import { isPast, isoFromNow, nowIso } from '../../shared/time.ts';
 import { events } from '../registry/events.ts';
-import { getProfile } from '../registry/index.ts';
+import { getProfile, getProfileAssumingFresh } from '../registry/index.ts';
 import { recordAudit } from '../observability/audit.ts';
 import { RegistryError } from '../registry/index.ts';
 
@@ -222,7 +222,8 @@ export async function verifyApiKey(
 	if (key.status === 'revoked') return { ok: false, status: 401, reason: 'revoked' };
 	if (key.status === 'suspended') return { ok: false, status: 403, reason: 'suspended' };
 	if (isPast(key.expiresAt)) return { ok: false, status: 401, reason: 'expired' };
-	if (!getProfile(key.profileId)) return { ok: false, status: 401, reason: 'no-profile' };
+	// a missing profile is suspected cache staleness, not a bad credential
+	if (!getProfileAssumingFresh(key.profileId, db)) return { ok: false, status: 401, reason: 'no-profile' };
 	if (
 		key.ipAllowlist &&
 		key.ipAllowlist.length > 0 &&

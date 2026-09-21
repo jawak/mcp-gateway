@@ -107,3 +107,50 @@ describe('MemoryEventStore', () => {
 		expect(first).not.toBe(second);
 	});
 });
+
+describe('session liveness writes (T-13, T-44)', () => {
+	test('last_seen_at is written once, not once per request', async () => {
+		const { SessionRegistry } = await import('../../src/lib/server/mcp/session');
+		let seenWrites = 0;
+		const sessions = new SessionRegistry({
+			store: { created: () => {}, seen: () => (seenWrites += 1), closed: () => {} }
+		});
+		const session = sessions.register({
+			id: 'sess-1',
+			caller: { apiKeyId: 'k', keyName: 'k', profileId: 'p', requestId: 'r', clientAddress: '::1' },
+			protocolVersion: '2025-06-18',
+			clientInfo: null,
+			unwatch: () => {}
+		} as never);
+		expect(session).toBeDefined();
+		const baseline = seenWrites;
+		for (let index = 0; index < 500; index += 1) sessions.get('sess-1');
+		// the first lookup has no recorded write yet and legitimately stamps one;
+		// the remaining 499 must be free
+		expect(seenWrites - baseline).toBeLessThanOrEqual(1);
+
+		sessions.close('sess-1', 'client');
+	});
+
+	test('closing flushes the true last-activity time', async () => {
+		const { SessionRegistry } = await import('../../src/lib/server/mcp/session');
+		const stamps: string[] = [];
+		const sessions = new SessionRegistry({
+			store: { created: () => {}, seen: (id, at) => stamps.push(at), closed: () => {} }
+		});
+		sessions.register({
+			id: 'sess-2',
+			caller: { apiKeyId: 'k', keyName: 'k', profileId: 'p', requestId: 'r', clientAddress: '::1' },
+			protocolVersion: '2025-06-18',
+			clientInfo: null,
+			unwatch: () => {}
+		} as never);
+		const afterOpen = stamps.length;
+		for (let index = 0; index < 100; index += 1) sessions.get('sess-2');
+		expect(stamps.length - afterOpen).toBeLessThanOrEqual(1);
+		const beforeClose = stamps.length;
+		await sessions.close('sess-2', 'client');
+		// close always persists the final activity time
+		expect(stamps.length).toBeGreaterThan(beforeClose);
+	});
+});

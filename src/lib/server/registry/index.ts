@@ -230,6 +230,22 @@ export function getProfile(id: string): CachedProfile | undefined {
 	return snapshot.profilesById.get(id);
 }
 
+/**
+ * Like getProfile, but treats a miss as suspected staleness.
+ *
+ * A key created seconds ago through the dashboard lives in another module instance
+ * (the SvelteKit bundle) and may not be in this process's cache yet. Refusing with
+ * `no-profile` there is both wrong and loud — it looks like a broken key, and it
+ * would poison the per-IP auth-failure backoff, locking an operator out right after
+ * they minted a key. One forced reload makes the window effectively zero.
+ */
+export function getProfileAssumingFresh(id: string, db: Db = getDb()): CachedProfile | undefined {
+	const cached = getProfile(id);
+	if (cached) return cached;
+	reload(db);
+	return snapshot.profilesById.get(id);
+}
+
 export function listProfiles(): CachedProfile[] {
 	return [...snapshot.profilesById.values()];
 }

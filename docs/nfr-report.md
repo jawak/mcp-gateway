@@ -1,0 +1,97 @@
+# NFR report — V1.0 gate (T-44)
+
+Measured on a development laptop (Apple Silicon, 16 GB, dev machine also running the
+build, the test suite and a browser — numbers on a 2 vCPU VPS will be worse, which is
+why the PRD's targets are treated as ceilings, not as what this machine happens to do).
+
+Reproduce:
+
+```sh
+bun run build
+MCPGW_DATA_DIR=/tmp/mcpgw MCPGW_ROOT_DIR=$PWD bun build/server.js &
+bun run scripts/smoke.ts    --base-url http://localhost:8080
+bun run scripts/loadtest.ts --base-url http://localhost:8080 --sessions 200 --burst 200
+```
+
+## Latency and throughput
+
+| Measurement | Target (PRD) | Measured | Verdict |
+| --- | --- | --- | --- |
+| `tools/list`, cache hit | p95 ≤ 100 ms | p50 1.4 ms / p95 5.1 ms | pass |
+| Added latency, `tools/call` (gateway − direct to the same server) | p50 ≤ 100 ms, p95 ≤ 300 ms | p50 0.9 ms / p95 3.1 ms | pass |
+| `tools/list` with 200 concurrent sessions | p95 ≤ 100 ms | p95 37.7 / 49.8 / 73.1 ms over 3 runs | pass |
+| Session establishment | — | 200 sessions in ~345 ms (≈ 580/s) | informational |
+| Loadtest process RSS | — | ~97 MB | informational |
+
+Added latency is measured as a **difference** against the same upstream reached
+directly over Streamable HTTP, so upstream execution time is not credited to the
+gateway. Measuring absolute gateway latency would have looked flattering and meant
+nothing.
+
+## Rate limiting
+
+Burst of 200 requests against a profile limited to 30 rpm: `429=170`, and the
+refusals carry `Retry-After` and `X-RateLimit-Remaining: 0`. The remaining 30 are
+`400` from the MCP transport (a raw `tools/list` without a session is not a valid
+post-initialize request) — they passed authentication and the limiter, which is what
+this check is about.
+
+## Findings during this audit
+
+Both were real, neither was visible to the 480-odd unit/integration tests.
+
+1. **One `UPDATE` per MCP request.** `SessionRegistry.get()` wrote `last_seen_at` on
+   every request. That column only feeds the idle collector — minute-level precision —
+   but it sits on the hot path of every request. Under 200 concurrent requests it became
+   200 serialized `UPDATE`s on a single SQLite connection and pushed `tools/list` to
+   p95 143 ms, over budget. Now throttled to one write per 15 s per session, with the
+   true final timestamp flushed when the session closes. Regression test added.
+   After the fix: p95 37–73 ms across three runs.
+
+2. **A freshly minted key could look like a bad credential.** The entrypoint bundle
+   and the SvelteKit bundle hold separate copies of the registry cache, so for up to
+   `STALE_MS` a key created in the dashboard was answered `no-profile` (401) by the
+   authenticator — and that refusal was counted as an authentication failure, which
+   after ten of them locked the operator's own IP out for 60 seconds, immediately after
+   they did the one thing they were supposed to be able to do. Two fixes:
+   `getProfileAssumingFresh()` treats a miss as suspected staleness and reloads once,
+   and only genuinely bad/unknown credentials count against a source address — an
+   expired, revoked or suspended key is a real credential that merely no longer works,
+   and a cache race is a server-side condition, not a guess.
+
+## Security checklist
+
+| Item | Requirement | Status | Evidence |
+| --- | --- | --- | --- |
+| API key storage | hash only, shown once | done | `tests/integration/apikey-lifecycle.test.ts` asserts the plaintext is absent from the DB and from a later page read; smoke test confirms one-time display |
+| Revocation latency | seconds, not idle timeout | done | smoke: live session → revoke → next request `401 revoked` |
+| Password storage | argon2id | done | `tests/unit/vault.test.ts`, login tests assert hash shape |
+| Enumeration resistance | same message and timing | done | dummy-hash verify on unknown accounts; test compares both message and time ratio |
+| IP backoff | 10 bad guesses/min → cooldown, per address | done | `tests/integration/auth-mcp.test.ts` |
+| Secrets at rest | AES-256-GCM, never returned | done | `tests/unit/vault.test.ts`; API surface only ever lists names |
+| No child-process secret leak | allowlisted env | done | `tests/integration/gateway-e2e.test.ts` proves `MCPGW_MASTER_KEY` is invisible to the spawned child |
+| Manifest cannot carry tokens | reject inlined credentials | done | `tests/integration/manifest.test.ts` (import rejected, nothing written) + smoke asserts the export has no credential shapes |
+| SSRF guard | https, private ranges, metadata IP, no redirects | done | `tests/unit/ssrf.test.ts`, `tests/integration/remote-upstream.test.ts` |
+| CSRF | origin check on form actions | done | smoke: cross-origin form action → `403` |
+| RBAC | viewer cannot mutate | done | `tests/unit/rbac.test.ts` policy matrix + hook tests |
+| Admin lockout | 5 failures → 15 min | done | `tests/integration/login.test.ts` |
+| Audit trail | append-only, covering config writes | done | `tests/integration/audit.test.ts`; no update/delete path exists in the module |
+| Header hygiene | CSP, nosniff, DENY, referrer, permissions | done | `tests/unit/rbac.test.ts` |
+| Non-root container | — | done | `deploy/Dockerfile` creates and switches to `mcpgw` |
+| Metrics not public | token required, closed when unset | done | smoke: `/metrics` 404 without a configured token |
+
+## Known gaps (accepted for V1.0)
+
+- **TLS terminates at Caddy**, not in the gateway; the compose stack assumes it. A
+  bare `bun run start` is plain HTTP and must sit behind a proxy.
+- **`/healthz` is unauthenticated by design** (container healthcheck), exposing counts
+  only — no key names, no upstream URLs.
+- **Single node.** Redis-backed shared state, HA and per-user OAuth are deliberately
+  deferred to v2 (T-47, T-48).
+- **Load figures are one machine, not a certified capacity number.** The suite is in
+  the repo so a VPS figure can be produced on demand; publishing a capacity promise
+  from a laptop would be misleading.
+- **The 1.000-concurrent-session figure from the PRD was not measured here** — 200
+  concurrent sessions were, and the cost per session is dominated by the per-request
+  auth query plus one throttled liveness write, so it scales linearly with connections
+  rather than quadratically.

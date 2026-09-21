@@ -16,6 +16,7 @@
 		"db:studio": "drizzle-kit studio",
 		"backup": "bun run scripts/backup.ts",
 		"smoke": "bun run scripts/smoke.ts",
+		"loadtest": "bun run scripts/loadtest.ts",
 		"preview": "bunx --bun vite preview",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",

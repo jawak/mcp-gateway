@@ -131,7 +131,12 @@ export function createMcpAuthenticator(options: AuthenticatorOptions = {}): Auth
 			db: options.db
 		});
 		if (!outcome.ok) {
-			const state = recordFailure(ip);
+			// Only a bad or unknown credential counts against the source address.
+			// Expired/revoked/suspended keys are real credentials that simply no longer
+			// work, and `no-profile` can be a momentary cache race — counting those would
+			// lock an operator out of their own gateway for a minute.
+			const guessed = outcome.reason === 'malformed' || outcome.reason === 'unknown';
+			const state = guessed ? recordFailure(ip) : { blocked: false, count: 0 };
 			options.metrics?.recordAuthFailure(outcome.reason);
 			if (state.count === 1 || state.count % AUDIT_EVERY === 0) {
 				recordAudit({

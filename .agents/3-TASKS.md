@@ -501,10 +501,12 @@
 
 ### T-44: Uji beban + audit keamanan (gate V1.0)
 - **Deskripsi:** k6/autocannon: 1.000 SSE session + 200 tool call/s, ukur added latency & RSS; audit checklist NFR Keamanan (scope isolation, SSRF, CSP, secret tidak di-log, rate limit, RBAC, backup restore drill); tulis hasil di `docs/nfr-report.md`.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-43 · **Estimasi:** 8h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-43 · **Estimasi:** 8h
 - **File:** `tests/load/gateway.js`, `docs/nfr-report.md`
-- **Acceptance:** p50 < 100 ms & p95 < 300 ms added latency; `tools/list` cache hit < 100 ms; checklist keamanan hijau; restore dari backup divalidasi.
-
+- **Acceptance:** p50 < 100 ms & p95 < 300 ms added latency; `tools/list` cache hit < 100 ms; checklist keamanan hijau; restore dari backup divalidasi.- **Catatan implementasi (2026-09-21):**
+  - `scripts/loadtest.ts` mengukur *added latency* sebagai selisih gateway vs akses langsung ke upstream yang sama (bukan latency absolut — itu memuji diri sendiri), plus konkurensi 200 sesi dan burst untuk limiter. `docs/nfr-report.md` berisi angka, checklist keamanan dengan bukti per butir, dan gap yang diterima.
+  - **Dua temuan nyata** (tak terlihat 480+ tes): (1) satu `UPDATE last_seen_at` per request MCP — kolom yang hanya dipakai GC presisi menit tapi berada di hot path, membuat `tools/list` @200 sesi meleset ke p95 143 ms; kini di-throttle 15 s/sesi + flush saat tutup (p95 37–73 ms, ada tes regresi). (2) kunci baru dari dashboard bisa dijawab `no-profile` (cache dua bundle) dan **dihitung sebagai kegagalan autentikasi**, sehingga IP operator sendiri terkunci 60 detik tepat setelah ia membuat kunci — kini cache-miss memicu reload sekali, dan hanya kredensial salah/tak dikenal yang menghitung terhadap alamat sumber.
+  - Angka beban dinyatakan sebagai ukuran satu mesin dev, bukan klaim kapasitas; VPS figure bisa diproduksi dari repo saat dibutuhkan.
 ### T-45: (V1.1) Template library bundled (FR-20)
 - **Deskripsi:** Skema template JSON + minimal 10 template (`github`, `sentry`, `postgres`, `filesystem`, `playwright`, `tempo`, `linear`, `slack`, `notion`, `context7`), `lib/server/templates/index.ts` (load + validasi + overlay `MCPGW_TEMPLATE_CATALOG_URL`), `/admin/templates` + action `fromTemplate` (form kredensial → `secret_refs` → create → smoke test → hasil tool count).
 - **Prioritas:** Mid · **Status:** Done · **Dependensi:** T-32, T-38 · **Estimasi:** 8h
@@ -579,4 +581,5 @@ Release : T-42 → T-43 → T-44   |   V1.1: T-45 (T-32,T-38), T-46 (T-40,T-43) 
 | 2026-09-21 | ✅ T-20, T-33…T-41, T-13, T-46 selesai (`89048eb`) — dashboard penuh + manifest + retensi/snapshot |
 | 2026-09-21 | 🔎 Dua bug arsitektur ketemu lewat smoke build nyata: (1) dua salinan modul (entrypoint vs bundle SvelteKit) bikin profil tak terlihat authenticator → snapshot jadi cache berbasis `kv.config_version`; (2) halaman dashboard memakai pool bersama akan menyalakan set proses anak kedua → probe kini pakai koneksi scratch |
 | 2026-09-21 | ✅ T-42 & T-43 selesai — smoke 23 pemeriksaan lawan build produksi (23/23 hijau) + Docker/Caddy/compose/CI/release |
+| 2026-09-21 | ✅ T-44 selesai — loadtest + audit NFR: 4/4 target tercapai (3× pengulangan), 2 bug nyata diperbaiki (UPDATE per request; cache race mengunci IP operator) |
 | 2026-09-21 | ⚠️ File task sempat terpotong setelah T-19 (skrip pembaruan status memanggang ekor file di commit `e9303fb`). Dipulihkan dari `17bfaec` dan digabung ulang per blok `### T-xx`; 48 blok utuh. pelajaran: skrip penulisan dokumen harus memverifikasi jumlah blok sebelum & sesudah |
