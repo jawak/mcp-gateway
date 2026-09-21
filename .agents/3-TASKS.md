@@ -280,21 +280,40 @@
 
 ### T-21: API key lifecycle
 - **Deskripsi:** `governance/apikey.ts`: `generate()` (`mcpgw_` + base58(32B), simpan `sha256`, `key_prefix`, `key_tail4`), `verify(header)` → `{ ok, key?, reason }` tanpa timing leak (hash lalu lookup), cek `status`/`expires_at`/`ip_allowlist`, `revoke`/`rotate` (metadata & scope tersalin, `rotated_from_id`), `suspend`/`resume`, audit tiap aksi.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-19 · **Estimasi:** 5h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-19 · **Estimasi:** 5h
 - **File:** `src/lib/server/governance/apikey.ts`, `tests/unit/apikey.test.ts`, `tests/integration/apikey-lifecycle.test.ts`
 - **Acceptance:** Key revoked ditolak 401; suspended → 403; expired → 401; rotate mempertahankan profil; `verify` dengan key salah/waktu konstan (test distribusi waktu); plaintext tidak pernah tersimpan di DB (assert kolom tidak ada).
+- **Catatan implementasi (2026-09-21):**
+  - `mcpgw_` + base58(32 byte acak); DB hanya menyimpan SHA-256 + `key_prefix`/`key_tail4`; plaintext sekali tampil.
+  - revoked = terminal (401, tidak bisa di-resume/di-rotate), suspended = 403 reversible, expired = 401 tanpa mengubah status.
+  - Rotate menyalin profil, batas, dan IP allowlist + merekam `rotated_from_id`; kunci lama langsung mati (FR-03).
+  - IP allowlist: exact, prefix (`10.0.0.`), CIDR; CIDR rusak **tidak pernah** memberi akses.
+  - Tiap aksi auditable (`apikey.*`) — modul audit dibuat di sini (inti T-25).
+
 
 ### T-22: Auth middleware `/mcp`
 - **Deskripsi:** `src/middleware/auth.ts`: parse `Authorization: Bearer` → `apikey.verify` → rate limit (T-23) → IP allowlist → validasi `Origin` terhadap `MCPGW_PUBLIC_URL` (tolak Origin browser asing) → inject `authInfo` (key id, profile id, scope) → `X-Request-Id` di respons; gagal-auth 10×/IP/menit → `429` backoff 60 s; `audit_log` untuk auth failure (sampling).
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-21, T-24 · **Estimasi:** 4h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-21, T-24 · **Estimasi:** 4h
 - **File:** `src/middleware/auth.ts`, `src/handle.ts`, `tests/integration/auth-mcp.test.ts`
 - **Acceptance:** Tanpa header → 401 + `WWW-Authenticate`; key valid → 200; Origin asing → 403; 10 auth gagal dari IP sama → request ke-11 `429` + `Retry-After`.
+- **Catatan implementasi (2026-09-21):**
+  - Urutan: Origin asing → 403 (sebelum lookup kunci) · throttle kegagalan per IP (10/menit → 60 s 429) · verifikasi kunci · budget request · quota harian · `touchApiKey` dengan debounce 30 s.
+  - Audit kegagalan di-*sampling* (gagal ke-1 lalu tiap ke-10) supaya volume tidak bisa membanjiri tabel audit.
+  - Komposisi di `mcp/gateway-app.ts`: snapshot → catalog → backend → endpoint; guard menyediakan slot konkurensi + konsumsi quota; event `key.revoked/suspended` menutup sesi seketika.
+  - **Uji asap produksi menemukan bug yang tidak tertangkap 300+ tes:** entrypoint tidak memanggil `ensureLoaded()`, sehingga snapshot kosong dan SEMUA kunci jadi `no-profile`. Penyebab lolos: tes selalu membuat data lewat registry di proses yang sama (reload implisit). Diperbaiki di `3f3b8a9`, sekaligus merekam `protocol_version` + `client_info` ke `mcp_sessions`.
+  - Hasil uji asap nyata (klien MCP → HTTP → 2 upstream stdio): 16 tool teragregasi, `alpha__echo`/`beta__add` benar, resources + prompts terproksi, `alpha__suicide` tidak terlihat (deny), baris `tool_calls` + `mcp_sessions` + `audit_log` tertulis.
+
 
 ### T-23: Rate limit, quota, konkurensi
 - **Deskripsi:** `governance/ratelimit.ts`: token bucket per key (`rate_limit_rpm`) di memori + rehydrate ringan, daily quota dari `kv` (`quota_day`, `quota_used`, reset saat tanggal ganti), semaphore `max_concurrency` per key & per upstream, header `Retry-After` + `X-RateLimit-Remaining`, status `rate_limited` di `tool_calls`.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-05 · **Estimasi:** 5h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-05 · **Estimasi:** 5h
 - **File:** `src/lib/server/governance/ratelimit.ts`, `tests/unit/ratelimit.test.ts`
 - **Acceptance:** 121 request dalam 1 menit pada limit 120 → request terakhir 429; quota harian tercapai → ditolak lalu reset saat `quota_day` berubah; konkurensi > 10 → antrian/reject sesuai config; tidak ada leak bucket setelah 10k iterasi.
+- **Catatan implementasi (2026-09-21):**
+  - Token bucket per kunci (refill kontinu, dibatasi kapasitas), quota harian di memori + flush ke `kv` tiap 20 call dan dipulihkan saat restart, semaphore konkurensi FIFO dengan `queueWaitMs` → `BusyError` (bukan antrian tak hingga).
+  - Roll-over hari dicek **saat akses**, bukan hanya saat sweep; state kunci idle disingkirkan (15 mnt) agar proses panjang tetap terbatas.
+  - `Retry-After` + `X-RateLimit-Remaining` tersedia lewat helper header; `release()` ganda tidak memberi slot ekstra.
+
 
 ### T-24: Profil & scope
 - **Deskripsi:** `governance/profile.ts`: CRUD profil + `profile_upstreams` (globs), `getScope(profileId)` → daftar upstream + aturan glob (di-cache, invalidasi via event), estimasi jumlah tool untuk UI, default rate limit/timeout (BR-06), guard profil terakhir/admin default.
@@ -498,4 +517,6 @@ Release : T-42 → T-43 → T-44   |   V1.1: T-45 (T-32,T-38), T-46 (T-40,T-43) 
 | 2026-09-21 | ✅ T-14 & T-15 selesai (`c3198c1`) — catalog + cache + filter saat read; 3 bug nyata diperbaiki; 300 test hijau |
 | 2026-09-21 | ✅ T-19 selesai — registry + event bus + hot reload; kebijakan hapus profil (guard key aktif + bersih-riwayat) diputuskan di sini |
 | 2026-09-21 | ✅ T-16, T-17 & T-18 selesai (`752af50`) — gateway berfungsi end-to-end; e2e menemukan 2 bug serius (retry timeout yang tidak aman, onclose transport basi); 316 test hijau |
+| 2026-09-21 | ✅ T-21, T-23 & T-22 selesai (`e626d81`) — API key, rate limit, batas autentikasi `/mcp`; 371 test hijau |
+| 2026-09-21 | 🔎 Uji asap produksi (`3f3b8a9`): klien MCP nyata berhasil memakai gateway; menemukan entrypoint tidak memuat snapshot registry (semua kunci `no-profile`) — 300+ tes tidak bisa menangkapnya karena tes selalu menulis lewat registry di proses yang sama |
 | 2026-09-21 | ⚠️ File task sempat terpotong setelah T-19 (skrip pembaruan status memanggang ekor file di commit `e9303fb`). Dipulihkan dari `17bfaec` dan digabung ulang per blok `### T-xx`; 48 blok utuh. pelajaran: skrip penulisan dokumen harus memverifikasi jumlah blok sebelum & sesudah |
