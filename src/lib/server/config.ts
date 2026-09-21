@@ -40,6 +40,11 @@ export type Config = {
 	host: string;
 	logLevel: string;
 	trustProxy: boolean;
+	/** Let remote upstreams resolve to RFC1918/CGNAT (private installs only). */
+	allowPrivateNetwork: boolean;
+	/** Skip upstream certificate verification. */
+	allowInsecureTls: boolean;
+	upstreamConnectTimeoutMs: number;
 	gracefulShutdownMs: number;
 	maxBodyBytes: number;
 	healthIntervalMs: number;
@@ -109,6 +114,9 @@ const envSchema = z.object({
 		)
 		.default('info'),
 	MCPGW_TRUST_PROXY: truthyDefault(true),
+	MCPGW_ALLOW_PRIVATE_NETWORK: truthyDefault(false),
+	MCPGW_ALLOW_INSECURE_TLS: truthyDefault(false),
+	MCPGW_UPSTREAM_CONNECT_TIMEOUT_S: positiveSeconds.default(10),
 	MCPGW_SHUTDOWN_TIMEOUT_S: positiveSeconds.default(30),
 	MCPGW_MAX_BODY_BYTES: z.coerce.number().int().min(1024).max(33_554_432).default(1_048_576),
 	MCPGW_HEALTH_INTERVAL_S: positiveSeconds.default(30),
@@ -248,6 +256,9 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
 		host: e.MCPGW_HOST,
 		logLevel: e.MCPGW_LOG_LEVEL.toLowerCase(),
 		trustProxy: e.MCPGW_TRUST_PROXY,
+		allowPrivateNetwork: e.MCPGW_ALLOW_PRIVATE_NETWORK,
+		allowInsecureTls: e.MCPGW_ALLOW_INSECURE_TLS,
+		upstreamConnectTimeoutMs: e.MCPGW_UPSTREAM_CONNECT_TIMEOUT_S * 1000,
 		gracefulShutdownMs: e.MCPGW_SHUTDOWN_TIMEOUT_S * 1000,
 		maxBodyBytes: e.MCPGW_MAX_BODY_BYTES,
 		healthIntervalMs: e.MCPGW_HEALTH_INTERVAL_S * 1000,
