@@ -369,11 +369,13 @@ describe('pool — real child processes', () => {
 
 		await pool.closeAll(2_000);
 
-		// the [e] bracket stops grep from matching its own `sh -c` argument line
+		// Only count children of *this* test process: a gateway running elsewhere on
+		// the same machine (dev server, smoke test) also spawns this fixture, and a
+		// global `ps` grep would blame us for those.
 		const probe = Bun.spawnSync([
 			'sh',
 			'-c',
-			'ps -eo pid,args | grep "[e]cho-mcp-server.ts" || true'
+			`ps -eo pid,ppid,args | awk -v p=$PPID '$2==p' | grep "[e]cho-mcp-server.ts" || true`
 		]);
 		const survivors = probe.stdout
 			.toString()

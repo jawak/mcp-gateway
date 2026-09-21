@@ -109,7 +109,8 @@ export function createMcpEndpoint(options: McpEndpointOptions): McpEndpoint {
 	}
 
 	/** Create the per-session server + transport, then run the handshake. */
-	async function handshake(caller: McpCaller, request: Request): Promise<Response> {
+	async function handshake(caller: McpCaller, incoming: Request): Promise<Response> {
+		let request = incoming;
 		const capabilities = {
 			tools: { listChanged: true },
 			resources: {
@@ -143,6 +144,16 @@ export function createMcpEndpoint(options: McpEndpointOptions): McpEndpoint {
 				void sessions.close(id, 'client');
 			}
 		});
+
+		// Peek at the initialize params so the session row records who is connected
+		// (protocol + client name). The payload is small and capped upstream, so one
+		// extra copy is cheaper than teaching every handler about the handshake.
+		const inspected = await inspectInitialize(request);
+		if (inspected) {
+			caller.protocolVersion = inspected.protocolVersion;
+			caller.clientInfo = inspected.clientInfo;
+			request = inspected.request;
+		}
 
 		registerHandlers(transport, server, options.backend, caller, log);
 		// Without this the transport has no protocol to dispatch to and every
@@ -337,6 +348,39 @@ function authInfoFor(caller: McpCaller): AuthInfo {
 			clientInfo: caller.clientInfo
 		}
 	};
+}
+
+type InspectedInitialize = {
+	protocolVersion?: string;
+	clientInfo?: { name: string; version?: string };
+	request: Request;
+};
+
+/** Read the handshake params without consuming the stream the transport needs. */
+async function inspectInitialize(request: Request): Promise<InspectedInitialize | undefined> {
+	try {
+		const text = await request.text();
+		const parsed = JSON.parse(text) as {
+			params?: { protocolVersion?: string; clientInfo?: { name?: string; version?: string } };
+		};
+		const info = parsed?.params?.clientInfo;
+		return {
+			...(parsed?.params?.protocolVersion
+				? { protocolVersion: parsed.params.protocolVersion }
+				: {}),
+			...(info?.name
+				? { clientInfo: { name: info.name, ...(info.version ? { version: info.version } : {}) } }
+				: {}),
+			request: new Request(request.url, {
+				method: request.method,
+				headers: request.headers,
+				body: text,
+				duplex: 'half'
+			} as RequestInit)
+		};
+	} catch {
+		return undefined;
+	}
 }
 
 function messageOf(error: unknown): string {

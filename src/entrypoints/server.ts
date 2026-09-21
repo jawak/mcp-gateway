@@ -17,6 +17,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { createFetchHandler } from '../handle.ts';
 import { createGatewayApp } from '../lib/server/gateway-app.ts';
+import { ensureLoaded } from '../lib/server/registry/index.ts';
 import { createMcpAuthenticator } from '../middleware/auth.ts';
 import {
 	PayloadTooLargeError,
@@ -100,6 +101,9 @@ async function createApp(): Promise<() => Promise<void>> {
 	});
 	log.info({ root, version: config.version }, 'sveltekit server initialised');
 
+	// The gateway serves its in-memory config snapshot, so it has to be loaded
+	// before the first request — otherwise every key looks like it has no profile.
+	ensureLoaded();
 	const gateway = createGatewayApp({ authenticate: createMcpAuthenticator() });
 	const handleFetch = createFetchHandler({
 		mcp: (request, context) => gateway.endpoint.handle(request, context),
