@@ -11,16 +11,19 @@
 		"start": "bun build/server.js",
 		"worker": "bun build/worker.js",
 		"dev:server": "bun run --watch src/entrypoints/server.ts",
+		"db:generate": "drizzle-kit generate",
+		"db:migrate": "bun run scripts/migrate.ts",
+		"db:studio": "drizzle-kit studio",
+		"backup": "bun run scripts/backup.ts",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"lint": "prettier --check . && eslint .",
 		"format": "prettier --write .",
-		"test": "vitest run --passWithNoTests",
-		"test:unit": "vitest run --project unit --passWithNoTests",
-		"test:integration": "vitest run --project integration --passWithNoTests",
-		"test:watch": "vitest"
+		"test": "bun test",
+		"test:unit": "bun test tests/unit",
+		"test:integration": "bun test tests/integration"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
@@ -48,8 +51,7 @@
 		"tailwindcss": "^4.3.0",
 		"typescript": "^6.0.3",
 		"typescript-eslint": "^8.60.1",
-		"vite": "^8.0.16",
-		"vitest": "^4.1.8"
+		"vite": "^8.0.16"
 	},
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "1.30.0",

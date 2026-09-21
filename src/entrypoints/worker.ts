@@ -10,11 +10,16 @@
  */
 import { events } from '../lib/server/registry/events.ts';
 import { getConfig } from '../lib/server/config.ts';
+import { waitForMigrations } from '../lib/server/db/migrate.ts';
 import { logger } from '../lib/server/observability/logger.ts';
 
 const log = logger.child({ component: 'worker' });
 const config = getConfig();
 const healthIntervalMs = config.healthIntervalMs;
+
+// The API process owns migrations; start only once the schema is current.
+const schemaVersion = await waitForMigrations({ timeoutMs: 60_000 });
+log.info({ schema_version: schemaVersion }, 'schema is current');
 
 let ticks = 0;
 const timer = setInterval(() => {

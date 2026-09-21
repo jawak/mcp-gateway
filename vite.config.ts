@@ -1,5 +1,5 @@
 import tailwindcss from '@tailwindcss/vite';
-import { defineConfig } from 'vitest/config';
+import { defineConfig } from 'vite';
 import adapter from '@sveltejs/adapter-node';
 import { sveltekit } from '@sveltejs/kit/vite';
 
@@ -21,29 +21,5 @@ export default defineConfig({
 			// must stay external so the bundled server shares one module instance
 			external: ['@sveltejs/kit', '@sveltejs/kit/*', '@sveltejs/adapter-node/*']
 		}
-	},
-	test: {
-		expect: { requireAssertions: true },
-		projects: [
-			{
-				extends: './vite.config.ts',
-				test: {
-					name: 'unit',
-					environment: 'node',
-					include: ['tests/unit/**/*.test.ts', 'src/**/*.test.ts'],
-					exclude: ['src/**/*.svelte.{test,spec}.{js,ts}']
-				}
-			},
-			{
-				extends: './vite.config.ts',
-				test: {
-					name: 'integration',
-					environment: 'node',
-					pool: 'forks',
-					include: ['tests/integration/**/*.test.ts'],
-					exclude: ['src/**/*.svelte.{test,spec}.{js,ts}']
-				}
-			}
-		]
 	}
 });

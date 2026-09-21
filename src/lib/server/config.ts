@@ -15,6 +15,9 @@
  */
 import { hkdfSync } from 'node:crypto';
 import { z } from 'zod';
+// Inlined by the bundler, so the built server knows its own version without
+// depending on how it was launched (bun build/server.js has no npm_* env).
+import pkg from '../../../package.json';
 
 export type Mode = 'strict' | 'lenient';
 
@@ -230,7 +233,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
 
 	return {
 		appName: 'mcp-gateway',
-		version: process.env.npm_package_version ?? '0.0.0',
+		version: pkg.version,
 		isProduction,
 		masterKey,
 		masterKeyIsEphemeral,

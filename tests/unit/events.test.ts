@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from 'vitest';
+import { describe, expect, test } from 'bun:test';
 import { EventBus } from '../../src/lib/server/registry/events';
 import { clientIp } from '../../src/lib/server/http/forwarded';
 
@@ -30,19 +30,30 @@ describe('EventBus', () => {
 
 	test('a throwing handler does not break the emitter or siblings', async () => {
 		const bus = new EventBus();
-		const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		const original = console.error;
+		const captured: unknown[][] = [];
+		console.error = (...args: unknown[]) => {
+			captured.push(args);
+		};
 		let survivor = 0;
-		bus.on('profile.changed', () => {
-			throw new Error('boom');
-		});
-		bus.on('profile.changed', () => {
-			survivor += 1;
-		});
-		expect(() => bus.emit('profile.changed', { profileId: 'p1' })).not.toThrow();
-		await new Promise((resolve) => setTimeout(resolve, 0));
+		try {
+			bus.on('profile.changed', () => {
+				throw new Error('boom');
+			});
+			bus.on('profile.changed', () => {
+				survivor += 1;
+			});
+			expect(() => bus.emit('profile.changed', { profileId: 'p1' })).not.toThrow();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		} finally {
+			console.error = original;
+		}
 		expect(survivor).toBe(1);
-		expect(errors).toHaveBeenCalled();
-		errors.mockRestore();
+		expect(captured.length).toBe(1);
+		const [payload, message] = captured[0] as [{ error: Error; event: string }, string];
+		expect(payload.error.message).toBe('boom');
+		expect(payload.event).toBe('profile.changed');
+		expect(message).toContain('event handler failed');
 	});
 
 	test('removeAllHandlers clears every subscription', async () => {

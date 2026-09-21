@@ -23,8 +23,10 @@ import {
 	writeWebResponse
 } from '../lib/server/http/bridge.ts';
 import { serveStatic } from '../lib/server/http/static.ts';
+import { runMigrations } from '../lib/server/db/migrate.ts';
+import { seedAdmin } from '../lib/server/db/seed.ts';
 import { events } from '../lib/server/registry/events.ts';
-import { ConfigError, loadConfig, type Config } from '../lib/server/config.ts';
+import { ConfigError, getConfig, type Config } from '../lib/server/config.ts';
 import { logger } from '../lib/server/observability/logger.ts';
 
 const log = logger.child({ component: 'server' });
@@ -32,7 +34,7 @@ const log = logger.child({ component: 'server' });
 /** Fail fast: a misconfigured gateway must not start half-alive. */
 let config: Config;
 try {
-	config = loadConfig();
+	config = getConfig();
 } catch (error) {
 	if (error instanceof ConfigError) {
 		console.error(error.message);
@@ -79,6 +81,13 @@ async function loadSvelteKit(root: string): Promise<SvelteKitServer> {
 }
 
 async function createApp(): Promise<() => Promise<void>> {
+	// Single-writer migration at boot, before a single request is served.
+	const { db, version } = runMigrations();
+	log.info({ schema_version: version }, 'database migrated');
+	const seeded = await seedAdmin(db);
+	if (seeded.created)
+		log.info({ email: seeded.email, reason: seeded.reason }, 'admin bootstrapped');
+
 	const root = resolveRoot();
 	const clientDir = path.join(root, 'build', 'client');
 	const app = await loadSvelteKit(root);

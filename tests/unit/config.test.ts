@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'bun:test';
 import { ConfigError, deriveKey, loadConfig } from '../../src/lib/server/config';
 
 const VALID_KEY = 'a'.repeat(64);
@@ -120,7 +120,7 @@ describe('loadConfig — coercion and defaults', () => {
 				mode: 'strict',
 				env: env({ MCPGW_PORT: 'x', MCPGW_LOG_LEVEL: 'shout', MCPGW_ADMIN_PASSWORD: 'short' })
 			});
-			expect.unreachable();
+			throw new Error('expected loadConfig to throw');
 		} catch (error) {
 			const issues = (error as ConfigError).issues.join('\n');
 			expect(issues).toContain('MCPGW_PORT');
