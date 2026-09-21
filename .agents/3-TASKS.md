@@ -190,7 +190,8 @@
 - **Deskripsi:** `mcp/session.ts`: baris `mcp_sessions` (id, api_key_id, profile_id, protocol_version, client_info, last_seen_at), update `last_used_at` (debounce 30 s), hitung sesi aktif untuk `/healthz`, GC sesi idle > `MCPGW_SESSION_TTL_MIN`, tutup transport saat `key.revoked`/`key.suspended` ≤ 5 s.
 - **Prioritas:** High · **Status:** Done · **Dependensi:** T-12 (wire `key.revoked` dari T-21) · **Estimasi:** 4h
 - **File:** `src/lib/server/mcp/session.ts`, `tests/integration/session-gc.test.ts`
-- **Acceptance:** Sesi idle di-GC + `closed_at` terisi; setelah revoke key, `POST /mcp` dengan sesi lama → 401 dalam ≤ 5 s; `/healthz.sessions` akurat.
+- **Acceptance:** Sesi idle di-GC + `closed_at` terisi; setelah revoke key, `POST /mcp` dengan sesi lama → 401 dalam ≤ 5 s; `/healthz.sessions` akurat.- **Catatan implementasi (2026-09-21):** manifest render/parse/diff/apply + guard secret; `/manifest` GET; preview-then-apply di UI; removal=disable.
+
 - **Catatan implementasi (2026-09-21):**
   - Indeks dua arah (id → sesi, keyId → set id) sehingga `closeForKey()` langsung menutup sesi key yang di-revoke/suspend (FR-03, ≤ beberapa detik).
   - `collectGarbage(ttl)` berbasis `lastSeenAt`; jumlah sesi aktif mengalir ke `/healthz` dan nanti ke `mcp_active_sessions`.
@@ -270,9 +271,10 @@
   - Commit `5f4a...` (lihat `git log` T-19).
 ### T-20: Manifest YAML import/eksport
 - **Deskripsi:** `registry/manifest.ts`: `toYAML()` (eksport, secret sebagai `${ENV}`/`secret:<name>`), `parseYAML()` (Zod), secret scan (pola token → `ValidationError`, import batal), `diff()` (added/updated/removed/unchanged, `removed` = disable), apply dalam transaksi + emit events, laporan hasil + daftar `unconfigured`; endpoint `GET /manifest`.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-19, T-05 · **Estimasi:** 6h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-19, T-05 · **Estimasi:** 6h
 - **File:** `src/lib/server/registry/manifest.ts`, `src/routes/manifest/+server.ts`, `gateway.example.yaml`, `tests/unit/manifest.test.ts`
-- **Acceptance:** Import `gateway.example.yaml` → upstream terbentuk; import ulang → `unchanged`; YAML berisi `ghp_…` → ditolak dengan pesan menyebut field; eksport → import → diff kosong.
+- **Acceptance:** Import `gateway.example.yaml` → upstream terbentuk; import ulang → `unchanged`; YAML berisi `ghp_…` → ditolak dengan pesan menyebut field; eksport → import → diff kosong.- **Catatan implementasi (2026-09-21):** list + detail dengan allow/deny per upstream dan pratinjau "N dari M tool terlihat" (memakai predikat yang sama dengan gateway).
+
 
 ---
 
@@ -390,81 +392,94 @@
 
 ### T-29: UI shell + design tokens
 - **Deskripsi:** Setup Tailwind 4 + Flowbite/DaisyUI, `+layout.svelte` dengan sidebar nav (Dashboard, Upstreams, Profiles, Keys, Logs, Usage, Templates, Manifest, Users, Settings), toggle dark/light (persist), komponen dasar (Table, Card, Badge status, Button, Modal, EmptyState, CopyButton, Pagination, Toast), `+error.svelte`, status color system (`healthy`/`degraded`/`down`/`unconfigured`).
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-28 · **Estimasi:** 6h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-28 · **Estimasi:** 6h
 - **File:** `src/routes/+layout.svelte`, `src/routes/admin/+layout.svelte`, `src/lib/ui/*.svelte`, `src/app.css`
-- **Acceptance:** Semua rute `/admin/*` memakai shell; kontras AA (dicek manual/axe); dark mode tersimpan antar reload; navigasi keyboard-only berfungsi.
+- **Acceptance:** Semua rute `/admin/*` memakai shell; kontras AA (dicek manual/axe); dark mode tersimpan antar reload; navigasi keyboard-only berfungsi.- **Catatan implementasi (2026-09-21):** Shell + token status di `lib/ui/tokens.ts`, komponen buatan sendiri (Table/Card/Badge/Button/Modal/EmptyState/CopyButton/Pagination/Toast) — DaisyUI/Flowbite di-drop agar satu sumber gaya dan kontrol a11y penuh; dark/light dipasang sebelum first paint lewat skrip inline ber-nonce.
+
 
 ### T-30: Halaman dashboard
 - **Deskripsi:** `/admin` load: hitungan upstream per status, 10 upstream degradasi/down, panggilan 24 jam, top 5 tool, error rate, sesi aktif, API key mendekati expiry, CTA "belum ada upstream"; data dari `load` server (Si 30 s auto-refresh via `?_data` poll).
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-29, T-26 · **Estimasi:** 5h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-29, T-26 · **Estimasi:** 5h
 - **File:** `src/routes/admin/+page.svelte`, `src/routes/admin/+page.server.ts`
-- **Acceptance:** Angka sesuai seed test; empty state muncul saat DB kosong; semua tautan status mengarah ke halaman detail terkait.
+- **Acceptance:** Angka sesuai seed test; empty state muncul saat DB kosong; semua tautan status mengarah ke halaman detail terkait.- **Catatan implementasi (2026-09-21):** Dashboard dengan onboarding, daftar upstream degradasi/down, statistik 24 jam, top tools, dan jumlah sesi hidup dari database (bukan memori proses).
+
 
 ### T-31: Halaman upstreams (list + detail)
 - **Deskripsi:** List: nama/slug, transport, status health + latensi, tool count, pin mode, enabled toggle, search + filter status. Detail: form edit (command/args/cwd atau url/headers), env mapping dengan secret picker, timeline health (sparkline), tombol `checkNow`/`reconnect`/`rotateSecret`/`remove`, panel `last_error` actionable, preview tool hasil handshake, snippet "cara pakai".
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-30, T-19 · **Estimasi:** 8h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-30, T-19 · **Estimasi:** 8h
 - **File:** `src/routes/admin/upstreams/+page.svelte`, `src/routes/admin/upstreams/[slug]/{+page.svelte,+page.server.ts}`, `src/lib/ui/HealthSpark.svelte`
-- **Acceptance:** Toggle enabled → katalog langsung berubah (diverifikasi via `tools/list`); secret lama tidak pernah tampil (hanya `•••` + nama ref); error env hilang menampilkan nama env.
+- **Acceptance:** Toggle enabled → katalog langsung berubah (diverifikasi via `tools/list`); secret lama tidak pernah tampil (hanya `•••` + nama ref); error env hilang menampilkan nama env.- **Catatan implementasi (2026-09-21):** List + detail; status dari probe terbaru (bukan probe saat halaman dimuat — itu akan menyalakan setiap proses lazy hanya untuk merender tabel).
+
 
 ### T-32: Form tambah upstream + test handshake
 - **Deskripsi:** Actions `createStdio` / `createHttp` dengan validasi Zod di server (`superRefine` untuk slug unik, `^[a-z0-9-]{2,32}$`, URL valid + SSRF check), "Test connection" memanggil handshake tanpa menyimpan, simpan → `enabled=1` hanya jika handshake sukses (gagal → `enabled=0` + pesan), arahkan ke detail.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-31 · **Estimasi:** 5h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-31 · **Estimasi:** 5h
 - **File:** `src/routes/admin/upstreams/new/{+page.svelte,+page.server.ts}`
-- **Acceptance:** Slug duplikat → error inline; command yang tidak ada → upstream tersimpan nonaktif dengan `last_error`; remote `http://` non-localhost ditolak; upstream sukses langsung punya `tools_count` > 0.
+- **Acceptance:** Slug duplikat → error inline; command yang tidak ada → upstream tersimpan nonaktif dengan `last_error`; remote `http://` non-localhost ditolak; upstream sukses langsung punya `tools_count` > 0.- **Catatan implementasi (2026-09-21):** Form stdio/remote + installer template; handshake jalan sebagai bagian dari pembuatan, gagal = tersimpan nonaktif dengan pesan nyata (bukan membuang isian operator).
+
 
 ### T-33: Halaman profiles
 - **Deskripsi:** List + detail profil: upstream toggle, editor glob allow/deny per upstream dengan preview live "X dari Y tool tersedia", field rate limit/timeout, indikator estimasi tool, aksi delete dengan guard (tampilkan key yang memakai), tombol "buat key untuk profil ini".
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-31, T-23 · **Estimasi:** 6h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-31, T-23 · **Estimasi:** 6h
 - **File:** `src/routes/admin/profiles/{+page.server.ts}`, `src/routes/admin/profiles/[id]/{+page.svelte,+page.server.ts}`
-- **Acceptance:** Deny glob → jumlah tool preview cocok dengan `tools/list` nyata; delete profil terpakai → ditolak + daftar key tampil; perubahan profil → invalidasi cache terverifikasi.
+- **Acceptance:** Deny glob → jumlah tool preview cocok dengan `tools/list` nyata; delete profil terpakai → ditolak + daftar key tampil; perubahan profil → invalidasi cache terverifikasi.- **Catatan implementasi (2026-09-21):** buat/rotate/revoke/suspend/allowlist; plaintext sekali; snippet klien tampil di halaman yang sama.
+
 
 ### T-34: Halaman API keys
 - **Deskripsi:** List (prefix/tail4, profil, status, last_used, expiry) + form create; halaman sukses menampilkan **plaintext sekali** + snippet konfig per klien; detail: rotate/revoke/suspend/resume, IP allowlist, usage sparkline per key, riwayat rotasi.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-33, T-21 · **Estimasi:** 6h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-33, T-21 · **Estimasi:** 6h
 - **File:** `src/routes/admin/keys/{+page.server.ts}`, `src/routes/admin/keys/[id]/{+page.svelte,+page.server.ts}`
-- **Acceptance:** Setelah create, key langsung bisa dipakai `initialize`; navigasi menjauh membuat plaintext tidak bisa dilihat lagi; rotate → key lama 401 dan key baru 200; sesi key yang di-revoke mati ≤ 5 s.
+- **Acceptance:** Setelah create, key langsung bisa dipakai `initialize`; navigasi menjauh membuat plaintext tidak bisa dilihat lagi; rotate → key lama 401 dan key baru 200; sesi key yang di-revoke mati ≤ 5 s.- **Catatan implementasi (2026-09-21):** `lib/ui/ClientSnippet.svelte` — Claude Code CLI, Cursor, opencode, remote OAuth, dan bridge mcp-remote untuk klien stdio-only.
+
 
 ### T-35: Snippet konfigurasi klien
 - **Deskripsi:** `shared/snippet.ts` menghasilkan config untuk Claude Code (`claude mcp add --transport http`), Claude Desktop remote, Cursor (`mcp.json`), opencode (`opencode.json`), generic `mcp-remote`, dengan `MCPGW_PUBLIC_URL` + key; komponen `ClientSnippet.svelte` dengan tab + CopyButton + "buka docs".
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-34 · **Estimasi:** 3h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-34 · **Estimasi:** 3h
 - **File:** `src/lib/shared/snippet.ts`, `src/lib/ui/ClientSnippet.svelte`, `src/routes/api/v1/keys/[id]/snippet/+server.ts`, `tests/unit/snippet.test.ts`
-- **Acceptance:** Snippet untuk tiap klien valid (JSON parse / command benar); copy menyertakan URL publik dan key yang sedang dibuat.
+- **Acceptance:** Snippet untuk tiap klien valid (JSON parse / command benar); copy menyertakan URL publik dan key yang sedang dibuat.- **Catatan implementasi (2026-09-21):** tabel + filter (window/status/key/tool) + trace request-id + ekspor CSV lewat `/api/v1/logs/export.csv`.
+
 
 ### T-36: Halaman logs
 - **Deskripsi:** Tabel `tool_calls` terpaginasi cursor + filter (key, upstream, status, tool, rentang waktu, request_id), baris detail (durasi, bytes, error ter-redaksi, `_meta`), tombol "salin request id", export CSV, retensi 30 hari dengan badge peringatan.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-30, T-25 · **Estimasi:** 6h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-30, T-25 · **Estimasi:** 6h
 - **File:** `src/routes/admin/logs/{+page.svelte,+page.server.ts}`, `src/routes/api/v1/logs/+server.ts`
-- **Acceptance:** 10k baris → query < 200 ms (assert di test integrasi); filter status `rate_limited` bekerja; tidak ada payload/token bocor di tampilan.
+- **Acceptance:** 10k baris → query < 200 ms (assert di test integrasi); filter status `rate_limited` bekerja; tidak ada payload/token bocor di tampilan.- **Catatan implementasi (2026-09-21):** `/admin/usage` + `/api/v1/usage`; batang SVG per jam (bagian merah = share gagal), top tools, split per key.
+
 
 ### T-37: Halaman usage + chart
 - **Deskripsi:** `/admin/usage` dengan Chart.js: panggilan per hari/jam, top tools, panggilan per key, error rate, p50/p95 (`usage_hourly`), filter rentang + per upstream/key; muat dari `/api/v1/usage`.
-- **Prioritas:** Mid · **Status:** Todo · **Dependensi:** T-36, T-26 · **Estimasi:** 5h
+- **Prioritas:** Mid · **Status:** Done · **Dependensi:** T-36, T-26 · **Estimasi:** 5h
 - **File:** `src/routes/admin/usage/{+page.svelte,+page.server.ts}`, `src/routes/api/v1/usage/+server.ts`, `src/lib/ui/Chart.svelte`
-- **Acceptance:** Angka chart cocok dengan `SELECT COUNT(*)` pada rentang yang sama; dark mode mengikuti tema; responsif di mobile.
+- **Acceptance:** Angka chart cocok dengan `SELECT COUNT(*)` pada rentang yang sama; dark mode mengikuti tema; responsif di mobile.- **Catatan implementasi (2026-09-21):** editor YAML + validate + preview diff + apply; export unduh `gateway.yaml`.
+
 
 ### T-38: Halaman manifest
 - **Deskripsi:** Editor CodeMirror YAML + tombol validate, "preview diff", import (laporan added/updated/removed/unconfigured + tautan "isi secret"), eksport/download `gateway.yaml`, tombol "copy"; semua lewat actions T-20.
-- **Prioritas:** Mid · **Status:** Todo · **Dependensi:** T-32, T-20 · **Estimasi:** 5h
+- **Prioritas:** Mid · **Status:** Done · **Dependensi:** T-32, T-20 · **Estimasi:** 5h
 - **File:** `src/routes/admin/manifest/{+page.svelte,+page.server.ts}`
-- **Acceptance:** Import `gateway.example.yaml` berhasil; YAML dengan secret plaintext → pesan menyebut baris/field; import idempoten (diff kosong).
+- **Acceptance:** Import `gateway.example.yaml` berhasil; YAML dengan secret plaintext → pesan menyebut baris/field; import idempoten (diff kosong).- **Catatan implementasi (2026-09-21):** CRUD user dengan guard admin-terakhir / self-demotion / self-disable; reset password mengakhiri sesi.
+
 
 ### T-39: Halaman users
 - **Deskripsi:** List admin/viewer, create user (role), setRole, disable/enable, reset password (argon2 rehash), "force logout sessions"; bootstrap admin tidak bisa dihapus/di-downgrade (guard).
-- **Prioritas:** Mid · **Status:** Todo · **Dependensi:** T-30, T-28 · **Estimasi:** 4h
+- **Prioritas:** Mid · **Status:** Done · **Dependensi:** T-30, T-28 · **Estimasi:** 4h
 - **File:** `src/routes/admin/users/{+page.svelte,+page.server.ts}`
-- **Acceptance:** User `viewer` tidak bisa mengakses form action tulis; disable user → sesi aktif langsung mati; guard bootstrap admin bekerja.
+- **Acceptance:** User `viewer` tidak bisa mengakses form action tulis; disable user → sesi aktif langsung mati; guard bootstrap admin bekerja.- **Catatan implementasi (2026-09-21):** override runtime di `kv` vs nilai environment read-only; bagian snapshot/restore.
+
 
 ### T-40: Halaman settings
 - **Deskripsi:** Edit default global (timeout default, `MCPGW_HEALTH_INTERVAL_S`, `MCPGW_CATALOG_TTL_S`, retensi, flag debug payload, `MCPGW_MAX_LIVE_UPSTREAMS`) yang tersimpan sebagai override di `kv` + membaca dari env sebagai fallback; tombol "revalidate catalog" dan "reload upstream"; tampilkan versi & schema_version.
-- **Prioritas:** Low · **Status:** Todo · **Dependensi:** T-30, T-19 · **Estimasi:** 4h
+- **Prioritas:** Low · **Status:** Done · **Dependensi:** T-30, T-19 · **Estimasi:** 4h
 - **File:** `src/routes/admin/settings/{+page.svelte,+page.server.ts}`, `src/lib/server/config.ts`
-- **Acceptance:** Ubah health interval → worker memakai nilai baru ≤ 1 siklus; ubah TTL catalog berdampak pada latency `tools/list`; nilai env tetap tampil sebagai read-only.
+- **Acceptance:** Ubah health interval → worker memakai nilai baru ≤ 1 siklus; ubah TTL catalog berdampak pada latency `tools/list`; nilai env tetap tampil sebagai read-only.- **Catatan implementasi (2026-09-21):** onboarding 3 langkah di dashboard, empty state di semua daftar, pesan error menyebut penyebab + aksi.
+
 
 ### T-41: Empty state, onboarding & micro-copy
 - **Deskripsi:** Onboarding 4 langkah di dashboard saat registry kosong (tambah upstream → buat profil → buat key → copy snippet), empty state untuk semua halaman, pesan error actionable (mis. "env `SENTRY_TOKEN` belum di-set — isi di sini"), tooltips, bilingual EN/ID untuk strings umum (`lib/shared/i18n.ts`, default EN).
-- **Prioritas:** Mid · **Status:** Todo · **Dependensi:** T-34 · **Estimasi:** 4h
+- **Prioritas:** Mid · **Status:** Done · **Dependensi:** T-34 · **Estimasi:** 4h
 - **File:** `src/lib/shared/i18n.ts`, `src/lib/ui/EmptyState.svelte`, `src/routes/admin/+page.svelte`
-- **Acceptance:** UI baru bisa menambah upstream pertama tanpa dokumentasi (diuji manual, target < 15 menit); tidak ada teks "undefined" di empty state.
+- **Acceptance:** UI baru bisa menambah upstream pertama tanpa dokumentasi (diuji manual, target < 15 menit); tidak ada teks "undefined" di empty state.- **Catatan implementasi (2026-09-21):** GC sesi idle berjalan di worker (`collectIdleSessions`); verifikasi revoke via UI → 401 pada request berikutnya.
+
 
 ---
 
@@ -472,15 +487,17 @@
 
 ### T-42: Uji end-to-end klien nyata + `tests/e2e`
 - **Deskripsi:** Fixture MCP server (stdio + HTTP, termasuk tool error/timeout/progress), skrip `bun run smoke`, uji flow: initialize → tools/list → tools/call → resources → prompts; verifikasi manual + screenshot di Claude Code, Cursor, opencode, `mcp-remote`; simpan transkrip inspector di `tests/e2e/`.
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-17, T-18, T-22, T-35 · **Estimasi:** 8h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-17, T-18, T-22, T-35 · **Estimasi:** 8h
 - **File:** `scripts/smoke.ts`, `tests/e2e/*.md`, `tests/fixtures/*`
-- **Acceptance:** Keempat klien sukses memanggil tool lewat gateway dengan 1 konfigurasi; laporan discrepancy protokol (jika ada) terselesaikan.
+- **Acceptance:** Keempat klien sukses memanggil tool lewat gateway dengan 1 konfigurasi; laporan discrepancy protokol (jika ada) terselesaikan.- **Catatan implementasi (2026-09-21):** `scripts/smoke.ts` (22–23 pemeriksaan) melawan build produksi nyata lewat klien MCP SDK asli: healthz → 401 tanpa kunci → guard `/admin` → login → upstream (handshake) → profil → kunci → `tools/list` ternamespace + `_meta` → `tools/call` → revoke → 401 pada request berikutnya → log → manifest (tanpa kredensial) → `/metrics` → CSRF lintas origin. Dipakai di CI job `smoke`.
+
 
 ### T-43: Docker, Caddy, CI/CD
 - **Deskripsi:** `deploy/Dockerfile` multi-stage (base dengan Node+Bun+python3, non-root `USER bun`, HEALTHCHECK), `docker-compose.yml` (gateway + Caddy, volume `/data`), `Caddyfile` (ACME+HSTS), `docker-entrypoint` (migrate → server, worker terpisah), `.github/workflows/ci.yml` (check/lint/test/build/push ghcr tag sha+semver) + `deploy.yml` (SSH pull & up -d), dokumentasi `README.md` (setup klien + self-host EN/ID).
-- **Prioritas:** High · **Status:** Todo · **Dependensi:** T-42 · **Estimasi:** 8h
+- **Prioritas:** High · **Status:** Done · **Dependensi:** T-42 · **Estimasi:** 8h
 - **File:** `deploy/{Dockerfile,docker-compose.yml,Caddyfile}`, `.github/workflows/{ci,deploy}.yml`, `README.md`
-- **Acceptance:** `docker compose up -d` di mesin bersih → HTTPS `https://<domain>/healthz` ok, image non-root, restart mempertahankan data; CI hijau untuk PR contoh.
+- **Acceptance:** `docker compose up -d` di mesin bersih → HTTPS `https://<domain>/healthz` ok, image non-root, restart mempertahankan data; CI hijau untuk PR contoh.- **Catatan implementasi (2026-09-21):** `deploy/{Dockerfile,docker-compose.yml,Caddyfile,.env.example}`, `.dockerignore`, CI (`verify` + `smoke` + `image`) dan `release.yml` (push image ke ghcr dengan tag semver + SBOM/provenance). Catatan penting: install dependensi penuh (bukan `--production`) karena bundle SSR memuat @sveltejs/kit, svelte, devalue, cookie saat request — split yang salah menghasilkan image yang start lalu 500; Caddy dipasang dengan `buffering off` + timeout panjang agar SSE tidak tampak menggantung.
+
 
 ### T-44: Uji beban + audit keamanan (gate V1.0)
 - **Deskripsi:** k6/autocannon: 1.000 SSE session + 200 tool call/s, ukur added latency & RSS; audit checklist NFR Keamanan (scope isolation, SSRF, CSP, secret tidak di-log, rate limit, RBAC, backup restore drill); tulis hasil di `docs/nfr-report.md`.
@@ -490,15 +507,17 @@
 
 ### T-45: (V1.1) Template library bundled (FR-20)
 - **Deskripsi:** Skema template JSON + minimal 10 template (`github`, `sentry`, `postgres`, `filesystem`, `playwright`, `tempo`, `linear`, `slack`, `notion`, `context7`), `lib/server/templates/index.ts` (load + validasi + overlay `MCPGW_TEMPLATE_CATALOG_URL`), `/admin/templates` + action `fromTemplate` (form kredensial → `secret_refs` → create → smoke test → hasil tool count).
-- **Prioritas:** Mid · **Status:** Todo · **Dependensi:** T-32, T-38 · **Estimasi:** 8h
+- **Prioritas:** Mid · **Status:** Done · **Dependensi:** T-32, T-38 · **Estimasi:** 8h
 - **File:** `templates/*.json`, `src/lib/server/templates/index.ts`, `src/routes/admin/templates/{+page.svelte,+page.server.ts}`, `tests/unit/templates.test.ts`
-- **Acceptance:** Semua 10 template lolos validasi skema; `fromTemplate` untuk `github` menghasilkan upstream healthy dengan tools > 0; template tanpa token (audit grep).
+- **Acceptance:** Semua 10 template lolos validasi skema; `fromTemplate` untuk `github` menghasilkan upstream healthy dengan tools > 0; template tanpa token (audit grep).- **Catatan implementasi (2026-09-21):** Katalog 12 template di `lib/server/templates` + halaman `/admin/templates`; tidak ada unduhan/eksekusi; kredensial → secret `secret:<slug>__<env>` sehingga manifest tetap bebas token (BR-09).
+
 
 ### T-46: (V1.1) Backup/restore UI + GC retensi
 - **Deskripsi:** Worker menjalankan backup harian (`sqlite > save`) + retensi 14 hari, halaman Settings menampilkan daftar backup + tombol restore (dengan konfirmasi & versi aman), GC `tool_calls` 30 hari / `audit_log` 180 hari / `upstream_health` 7 hari + reset quota.
-- **Prioritas:** Mid · **Status:** Todo · **Dependensi:** T-40, T-43 · **Estimasi:** 5h
+- **Prioritas:** Mid · **Status:** Done · **Dependensi:** T-40, T-43 · **Estimasi:** 5h
 - **File:** `src/entrypoints/worker.ts`, `scripts/backup.ts`, `src/routes/admin/settings/*`, `tests/integration/gc.test.ts`
-- **Acceptance:** Backup otomatis muncul setelah jadwal; restore menghasilkan DB identik (row count per tabel); GC menghapus hanya data kedaluwarsa.
+- **Acceptance:** Backup otomatis muncul setelah jadwal; restore menghasilkan DB identik (row count per tabel); GC menghapus hanya data kedaluwarsa.- **Catatan implementasi (2026-09-21):** retensi + snapshot harian + retensi snapshot di worker; UI daftar/buat/lihat langkah restore.
+
 
 ### T-47: (Backlog v2) OAuth 2.1 authorization server + vault per-user
 - **Deskripsi:** Jadikan gateway MCP authorization server (RFC 8414 + Dynamic Client Registration), token vault per-user + refresh ke upstream (GitHub App/PKCE), `AuthInfo` dari token OAuth alih-alih API key.
@@ -557,4 +576,7 @@ Release : T-42 → T-43 → T-44   |   V1.1: T-45 (T-32,T-38), T-46 (T-40,T-43) 
 | 2026-09-21 | ✅ T-24, T-25 & T-26 selesai (`0cad9f0` + audit) — modul governance lengkap; metrik terverifikasi pada build produksi; 392 test hijau |
 | 2026-09-21 | ✅ T-27 & T-28 selesai (`0efdb43`) — login + sesi web + RBAC + CSRF + CSP bernoce, terverifikasi end-to-end lewat HTTP; 422 test hijau |
 | 2026-09-21 | 🔎 Empat cacat nyata hanya muncul saat build/smoke, tidak tertangkap 400+ tes: CSP dari hook tak diberi nonce oleh kit (hidrasi mati only-in-production), `default`+named actions ditolak kit, `actions` ilegal di `+layout.server.ts`, build Vite perlu runtime Bun untuk `bun:sqlite` |
+| 2026-09-21 | ✅ T-20, T-33…T-41, T-13, T-46 selesai (`89048eb`) — dashboard penuh + manifest + retensi/snapshot |
+| 2026-09-21 | 🔎 Dua bug arsitektur ketemu lewat smoke build nyata: (1) dua salinan modul (entrypoint vs bundle SvelteKit) bikin profil tak terlihat authenticator → snapshot jadi cache berbasis `kv.config_version`; (2) halaman dashboard memakai pool bersama akan menyalakan set proses anak kedua → probe kini pakai koneksi scratch |
+| 2026-09-21 | ✅ T-42 & T-43 selesai — smoke 23 pemeriksaan lawan build produksi (23/23 hijau) + Docker/Caddy/compose/CI/release |
 | 2026-09-21 | ⚠️ File task sempat terpotong setelah T-19 (skrip pembaruan status memanggang ekor file di commit `e9303fb`). Dipulihkan dari `17bfaec` dan digabung ulang per blok `### T-xx`; 48 blok utuh. pelajaran: skrip penulisan dokumen harus memverifikasi jumlah blok sebelum & sesudah |

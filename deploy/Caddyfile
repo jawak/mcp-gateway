@@ -1,0 +1,18 @@
+# Replace with your hostname; Caddy obtains and renews TLS automatically.
+mcp.example.com {
+	encode zstd gzip
+
+	# MCP streams tool results over SSE, so response buffering must stay off or
+	# long-running calls look like hangs.
+	handle {
+		header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		reverse_proxy gateway:8080 {
+			buffering off
+			# tool calls can legitimately run for minutes
+			transport http {
+				read_timeout 600s
+				write_timeout 600s
+			}
+		}
+	}
+}

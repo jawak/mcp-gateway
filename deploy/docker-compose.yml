@@ -1,0 +1,50 @@
+# Self-host stack: TLS termination + gateway + worker.
+#
+# The worker is a separate service on purpose: probes, retention deletes and
+# snapshots must never delay a tool call. It shares the /data volume read-write,
+# which is safe because SQLite in WAL mode serialises writers with busy_timeout.
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [gateway]
+
+  gateway:
+    image: ${MCPGW_IMAGE:-ghcr.io/your-org/mcp-gateway:latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MCPGW_DATA_DIR: /data
+    volumes:
+      - mcpgw_data:/data
+      # only needed if you spawn upstreams from containers; mounting the socket
+      # hands the container host-level control, so it is opt-in and documented
+      # - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:8080/healthz']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    image: ${MCPGW_IMAGE:-ghcr.io/your-org/mcp-gateway:latest}
+    restart: unless-stopped
+    command: ['bun', 'run', 'worker']
+    env_file: .env
+    environment:
+      MCPGW_DATA_DIR: /data
+    volumes:
+      - mcpgw_data:/data
+    depends_on: [gateway]
+
+volumes:
+  mcpgw_data:
+  caddy_data:
+  caddy_config:

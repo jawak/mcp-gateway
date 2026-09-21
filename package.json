@@ -15,6 +15,7 @@
 		"db:migrate": "bun run scripts/migrate.ts",
 		"db:studio": "drizzle-kit studio",
 		"backup": "bun run scripts/backup.ts",
+		"smoke": "bun run scripts/smoke.ts",
 		"preview": "bunx --bun vite preview",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
