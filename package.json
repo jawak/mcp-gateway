@@ -10,6 +10,7 @@
 		"build:server": "bun run scripts/build-server.ts",
 		"start": "bun build/server.js",
 		"worker": "bun build/worker.js",
+		"worker:dev": "bun src/entrypoints/worker.ts",
 		"dev:server": "bun run --watch src/entrypoints/server.ts",
 		"db:generate": "drizzle-kit generate",
 		"db:migrate": "bun run scripts/migrate.ts",

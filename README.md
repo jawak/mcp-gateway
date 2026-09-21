@@ -28,6 +28,24 @@ runs with one command — `bun run db:migrate` is never required first. Only the
 `MCPGW_WORKER_WAIT_S`, default 60 s) before doing anything, refusing to start rather
 than sweeping a schema that is not there.
 
+```sh
+bun run dev         # dashboard + /mcp on http://localhost:5173
+bun run worker:dev  # optional: health sweep, session GC, retention, snapshots
+```
+
+`worker` runs the built file (`build/worker.js`) because the container image ships only
+build output; `worker:dev` runs the TypeScript source so a dev loop needs no build.
+
+The dev server loads `.env` itself (`.env`, `.env.local`, `.env.development[.local]`),
+because Vite never copies those files into `process.env` and Bun only auto-loads them for
+the entrypoint it runs directly — `bun run dev` hands off to `vite`, so relying on that
+autoloading left the entire configuration silently unset in development. A variable
+already present in the environment always wins over the file, so a shell, systemd unit or
+container environment overrides a stale file. Startup prints one line naming the files it
+read and whether `MCPGW_MASTER_KEY` came from the file or the environment — "is my `.env`
+being read?" should not require debugging to answer. Only `VITE_*`-prefixed variables are
+ever exposed to the browser, so `MCPGW_*` stays server-side.
+
 Production is the opposite on purpose: the web process migrates once at boot and
 nothing else ever runs DDL, so N replicas can start without racing `ALTER TABLE`.
 If the schema is ever missing or behind, `/mcp` answers `503` naming the one command
@@ -36,6 +54,8 @@ that fixes it and the dashboard says the same, while `/healthz` stays `200` with
 without restart-looping a process that only needs a human.
 
 Blank variables in `.env` count as unset, so the copied example file boots as-is.
+Leaving `MCPGW_PUBLIC_URL` blank makes the dashboard derive the client-snippet URL from
+the request host, which is what you want locally; set it explicitly in production.
 `MCPGW_ADMIN_PASSWORD` shorter than 12 characters is reported at boot and the account
 is not created — the gateway still starts, and the log tells you why.
 
@@ -44,6 +64,7 @@ is not created — the gateway still starts, and the log tells you why.
 | `bun run dev`                                      | Vite dev server (dashboard **and** `/mcp`, `/metrics`, `/healthz`) |
 | `bun run build` / `bun run start`                  | Production build and Bun server                                    |
 | `bun run worker`                                   | Health sweep, session GC, retention, daily snapshot                |
+| `bun run worker:dev`                               | Same, from TypeScript source — no build needed                     |
 | `bun run verify`                                   | check + lint + test + build (the CI gate)                          |
 | `bun run check`                                    | `svelte-kit sync` + `svelte-check`                                 |
 | `bun run lint` / `bun run format`                  | ESLint + Prettier                                                  |

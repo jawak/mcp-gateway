@@ -101,6 +101,33 @@ A fresh clone could not start: every request returned 500. Four defects, one sym
    existed in that checkout yet, which is itself the lesson: a test that depends on the
    absence of a file the developer is expected to create is not a test.
 
+### Configuration loading (found by a user running `bun run dev`)
+
+8. **`.env` was never read in development.** The symptom was a gateway that started
+   happily and reported `MCPGW_MASTER_KEY is unset`, `MCPGW_PUBLIC_URL is unset`,
+   `MCPGW_ADMIN_EMAIL/ADMIN_PASSWORD not set` — with a correct `.env` sitting in the
+   directory. Bun loads `.env` for the entrypoint it runs directly, but `bun run dev`
+   hands off to `vite`, and Vite/SvelteKit never copy `.env` into `process.env`; they
+   expose only `VITE_*` to the browser via `import.meta.env`. Every value this gateway
+   reads lives in `process.env`, so in development the configuration was entirely unset:
+   an ephemeral master key, no admin bootstrap, a public URL pointing at a port that was
+   not being used. The dev server now loads the files itself, before the server modules
+   are imported, with the environment taking precedence over the file — so it works for
+   `bun run dev`, `npx vite dev` and IDE launchers equally, and a container environment
+   is never overridden by a stale file in the image.
+
+   Two details that would otherwise be traps: `loadEnv` with an empty prefix returns the
+   **entire** `process.env` merged with the files, so "what came from the file" has to be
+   computed from the names actually declared there or the startup report is fiction; and
+   only `VITE_*` may ever reach the client, which is now asserted by a test rather than
+   trusted, because `envPrefix: ''` would publish the master key in the browser bundle.
+
+   **Why 500-odd tests missed this**: every one of them either set variables explicitly
+   or ran under `bun test`/`bun file.ts`, where Bun _does_ load `.env`. The only path that
+   reveals the defect is starting the dev server with nothing but a `.env` file — which is
+   precisely what a new operator does. Same lesson as the first-run cluster: the tests
+   exercised the mechanism, not the entrypoint a human uses.
+
 ## Security checklist
 
 | Item                         | Requirement                                      | Status | Evidence                                                                                                                                                            |
