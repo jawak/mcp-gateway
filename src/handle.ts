@@ -11,7 +11,7 @@
  * `tool_calls.request_id` and the admin log page.
  */
 import { randomUUID } from 'node:crypto';
-import { json } from './lib/server/http/bridge.ts';
+import { json, PayloadTooLargeError } from './lib/server/http/bridge.ts';
 import { clientIp } from './lib/server/http/forwarded.ts';
 import { getConfig } from './lib/server/config.ts';
 import { status, uptimeSeconds } from './lib/server/observability/status.ts';
@@ -26,6 +26,11 @@ export type RequestContext = {
 export type RouterDeps = {
 	/** SvelteKit app: web Request in, web Response out. */
 	sveltekit: (request: Request, context: RequestContext) => Promise<Response>;
+	/**
+	 * MCP endpoint (T-12). Absent until it is mounted, in which case /mcp answers
+	 * 503 so operators get an unambiguous signal instead of a silent 404.
+	 */
+	mcp?: (request: Request, context: RequestContext) => Promise<Response>;
 	version?: string;
 	maxBodyBytes?: number;
 	trustProxy?: boolean;
@@ -34,7 +39,7 @@ export type RouterDeps = {
 const MCP_METHODS = ['POST', 'GET', 'DELETE'];
 
 export function createFetchHandler(deps: RouterDeps): (request: Request) => Promise<Response> {
-	const { sveltekit } = deps;
+	const { sveltekit, mcp } = deps;
 	// Config is only consulted for values the caller did not provide, so tests
 	// and embedders can build a router without any environment variables.
 	const version = deps.version ?? getConfig().version;
@@ -69,8 +74,17 @@ export function createFetchHandler(deps: RouterDeps): (request: Request) => Prom
 				return decorate(handleHealthz(version));
 			case '/metrics':
 				return decorate(handleMetrics());
-			case '/mcp':
-				return decorate(await handleMcp(request, requestId, maxBodyBytes));
+			case '/mcp': {
+				// MCP Streamable HTTP only allows POST/GET/DELETE; anything else is
+				// refused here so it never reaches auth or a session.
+				if (!MCP_METHODS.includes(request.method.toUpperCase())) {
+					return decorate(methodNotAllowed());
+				}
+				const limit = await enforceBodyLimit(request, maxBodyBytes);
+				if (limit.error) return decorate(limit.error);
+				if (!mcp) return decorate(notMounted(requestId));
+				return decorate(await mcp(limit.capped ?? request, context));
+			}
 			default:
 				return decorate(await sveltekit(request, context));
 		}
@@ -106,28 +120,53 @@ function handleMetrics(): Response {
 	);
 }
 
-async function handleMcp(
+/**
+ * Enforce the body cap on `/mcp`.
+ *
+ * A declared `Content-Length` is rejected up front; a chunked body is wrapped in a
+ * counting stream that fails with `PayloadTooLargeError` while it is read, so the
+ * limit holds even when a client omits or lies about the length. The entrypoint
+ * maps that error to 413.
+ */
+async function enforceBodyLimit(
 	request: Request,
-	requestId: string,
 	maxBodyBytes: number
-): Promise<Response> {
-	const method = request.method.toUpperCase();
-	if (!MCP_METHODS.includes(method)) {
-		return json(
-			{ error: 'method_not_allowed' },
-			{ status: 405, headers: { allow: MCP_METHODS.join(', ') } }
-		);
-	}
-	if (method === 'POST' && request.body) {
-		// The body is drained here so the 1 MB cap is enforced now, before T-12
-		// mounts the real transport on this route.
-		const declared = Number.parseInt(request.headers.get('content-length') ?? '', 10);
-		if (Number.isFinite(declared) && declared > maxBodyBytes) return tooLarge(maxBodyBytes);
-		const body = await request.arrayBuffer();
-		if (body.byteLength > maxBodyBytes) return tooLarge(maxBodyBytes);
-	}
+): Promise<{ capped?: Request; error?: Response }> {
+	if (request.method.toUpperCase() !== 'POST' || !request.body) return {};
+	const declared = Number.parseInt(request.headers.get('content-length') ?? '', 10);
+	if (Number.isFinite(declared) && declared > maxBodyBytes)
+		return { error: tooLarge(maxBodyBytes) };
+
+	let received = 0;
+	const counter = new TransformStream<Uint8Array, Uint8Array>({
+		transform(chunk, controller) {
+			received += chunk.byteLength;
+			if (received > maxBodyBytes) {
+				controller.error(new PayloadTooLargeError(maxBodyBytes));
+				return;
+			}
+			controller.enqueue(chunk);
+		}
+	});
+	const capped = new Request(request.url, {
+		method: request.method,
+		headers: request.headers,
+		body: request.body.pipeThrough(counter),
+		duplex: 'half'
+	} as RequestInit);
+	return { capped };
+}
+
+function methodNotAllowed(): Response {
 	return json(
-		{ error: 'not_mounted', message: 'MCP transport arrives in T-12' },
+		{ error: 'method_not_allowed' },
+		{ status: 405, headers: { allow: MCP_METHODS.join(', ') } }
+	);
+}
+
+function notMounted(requestId: string): Response {
+	return json(
+		{ error: 'not_mounted', message: 'MCP transport is not mounted on this process' },
 		{ status: 503, headers: { 'x-request-id': requestId } }
 	);
 }

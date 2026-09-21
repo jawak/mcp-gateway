@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { createFetchHandler } from '../../src/handle';
+import { createFetchHandler, type RequestContext } from '../../src/handle';
 
 function router(
 	overrides: {
-		sveltekit?: (request: Request) => Promise<Response>;
+		sveltekit?: (request: Request, context: RequestContext) => Promise<Response>;
+		mcp?: (request: Request, context: RequestContext) => Promise<Response>;
 		maxBodyBytes?: number;
 	} = {}
 ) {
@@ -12,6 +13,7 @@ function router(
 			overrides.sveltekit ??
 			(async (request) =>
 				new Response(`sveltekit:${new URL(request.url).pathname}`, { status: 200 })),
+		...(overrides.mcp ? { mcp: overrides.mcp } : {}),
 		version: '0.0.1-test',
 		trustProxy: true,
 		maxBodyBytes: overrides.maxBodyBytes ?? 1_048_576
@@ -60,12 +62,66 @@ describe('/mcp', () => {
 		expect(body.error).toBe('not_mounted');
 	});
 
-	test('POST above the body limit is rejected with 413', async () => {
+	test('a declared content-length above the limit is rejected with 413', async () => {
 		const res = await router({ maxBodyBytes: 16 })(
-			new Request(url('/mcp'), { method: 'POST', body: 'x'.repeat(64) })
+			new Request(url('/mcp'), {
+				method: 'POST',
+				headers: { 'content-length': '64' },
+				body: 'x'.repeat(64)
+			})
 		);
 		expect(res.status).toBe(413);
 		expect(((await res.json()) as { error: string }).error).toBe('payload_too_large');
+	});
+
+	test('a chunked body that outgrows the limit fails while the endpoint reads it', async () => {
+		const { PayloadTooLargeError } = await import('../../src/lib/server/http/bridge');
+		let seen: Error | undefined;
+		const handle = router({
+			maxBodyBytes: 32,
+			mcp: async (request) => {
+				try {
+					await request.arrayBuffer();
+					return new Response('read everything');
+				} catch (error) {
+					seen = error as Error;
+					throw error;
+				}
+			}
+		});
+		// no content-length: the counting stream is the only thing that can catch this
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				for (let index = 0; index < 10; index += 1)
+					controller.enqueue(new Uint8Array(16).fill(120));
+				controller.close();
+			}
+		});
+		const request = new Request(url('/mcp'), {
+			method: 'POST',
+			body: stream,
+			duplex: 'half'
+		} as RequestInit);
+		await expect(handle(request)).rejects.toBeInstanceOf(PayloadTooLargeError);
+		expect(seen).toBeInstanceOf(PayloadTooLargeError);
+	});
+
+	test('the mcp endpoint receives the request and its context', async () => {
+		const seen: Array<{ method: string; requestId: string; address: string }> = [];
+		const handle = router({
+			mcp: async (request, context) => {
+				seen.push({
+					method: request.method,
+					requestId: context.requestId,
+					address: context.clientAddress
+				});
+				return new Response('ok');
+			}
+		});
+		const res = await handle(new Request(url('/mcp'), { method: 'POST', body: '{}' }));
+		expect(res.status).toBe(200);
+		expect(seen).toEqual([{ method: 'POST', requestId: seen[0]?.requestId, address: 'unknown' }]);
+		expect(seen[0]?.requestId).toMatch(/[0-9a-f-]{36}/);
 	});
 
 	test('methods outside POST/GET/DELETE get 405 with an allow header', async () => {
