@@ -7,7 +7,7 @@ import {
 	setUpstreamEnabled,
 	updateUpstream
 } from '$lib/server/registry';
-import { parseEnvLines, rowsToRefs } from '$lib/server/registry/env-form';
+import { parseArgsLine, parseEnvLines, rowsToRefs } from '$lib/server/registry/env-form';
 
 import { listSecrets, putSecret, secretExists } from '$lib/server/governance/secrets';
 import { testUpstream } from '$lib/server/governance/upstream-test';
@@ -112,10 +112,11 @@ export const actions = {
 		if (record.transport === 'stdio') {
 			if (values.command !== undefined) connection.command = values.command.trim();
 			if (values.args !== undefined) {
-				connection.args = values.args
-					.split(' ')
-					.map((part) => part.trim())
-					.filter((part) => part !== '');
+				try {
+					connection.args = parseArgsLine(values.args);
+				} catch (error) {
+					fieldErrors.args = (error as Error).message;
+				}
 			}
 			if (values.cwd !== undefined && values.cwd.trim()) connection.cwd = values.cwd.trim();
 		} else if (values.url !== undefined) {

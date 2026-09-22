@@ -14,6 +14,7 @@ import { getDb, type Db } from '../db/index.ts';
 import { apiKeys, kv, profileUpstreams, profiles, upstreams } from '../db/schema.ts';
 import { MIGRATE_HINT, schemaIsPresent } from '../db/migrate.ts';
 import { credentialLookingRef } from '../security/env-resolve.ts';
+import { redactString } from '../security/redact.ts';
 import { toUpstreamRecord } from '../upstream/health.ts';
 import { uuidv7 } from '../../shared/ids.ts';
 import { isPast, nowIso } from '../../shared/time.ts';
@@ -357,6 +358,27 @@ function assertRefsAreSafe(slug: string, envRefs: Record<string, string>, header
 	}
 }
 
+/**
+ * A redacted summary of what the gateway will execute, for the audit trail.
+ *
+ * Deliberately not the whole `connection` blob: `cwd`, timeouts and auth wiring are
+ * noise in a log someone reads under pressure, while the command line is the fact
+ * they need. Redaction covers the case where somebody puts a token in an argument
+ * instead of the vault — the audit row must not become the leak they were hunting.
+ */
+function describeConnection(
+	transport: 'stdio' | 'http',
+	connection: UpstreamRecord['connection']
+): Record<string, string> {
+	const shape = connection as Record<string, unknown>;
+	if (transport === 'stdio') {
+		const command = typeof shape.command === 'string' ? shape.command : '';
+		const args = Array.isArray(shape.args) ? (shape.args as unknown[]).join(' ') : '';
+		return { command: redactString(command ? `${command} ${args}`.trim() : '') };
+	}
+	return { url: typeof shape.url === 'string' ? redactString(shape.url) : '' };
+}
+
 export type CreateUpstreamInput = Omit<UpstreamPatch, 'id'> & {
 	slug: string;
 	name: string;
@@ -396,14 +418,22 @@ export function createUpstream(
 		.run();
 	commitWrite(db);
 	events.emit('upstream.changed', { slug: input.slug, enabled: input.enabled ?? true });
-	// the definition may reference secrets, so only the shape goes into the audit row
+	// What an operator is trying to execute is the single most important fact in this
+	// audit row. Recording only `{transport, pin}` meant a forensic review could not
+	// answer "which binary was installed, and when" — the one question asked after an
+	// incident. Values are redacted because arguments are where a token ends up when
+	// somebody skips the secret store.
 	audit(
 		'upstream.create',
 		input.slug,
 		actorId,
 		ip,
 		requestId,
-		{ transport: input.transport, pin: input.pin ?? 'pinned' },
+		{
+			transport: input.transport,
+			pin: input.pin ?? 'pinned',
+			...describeConnection(input.transport, input.connection)
+		},
 		db
 	);
 	log.info({ slug: input.slug, transport: input.transport }, 'upstream created');
@@ -456,7 +486,14 @@ export function updateUpstream(
 		actorId,
 		ip,
 		requestId,
-		{ fields: Object.keys(patch) },
+		{
+			fields: Object.keys(patch),
+			// only when the executable definition actually changed, so the interesting
+			// rows are not buried under renames and timeout tweaks
+			...(patch.connection !== undefined
+				? describeConnection(updated.transport, updated.connection)
+				: {})
+		},
 		db
 	);
 	log.info({ slug: updated.slug }, 'upstream updated');

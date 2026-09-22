@@ -11,7 +11,9 @@ Bun ≥ 1.2 · SvelteKit 2 + adapter-node (one process; `/mcp` is mounted by a B
 ## Prerequisites
 
 - Bun ≥ 1.2
-- Node ≥ 20 and/or Python (`uvx`) / Docker — only needed for the **upstream** MCP servers you spawn via stdio
+- Whatever runtime your **upstreams** need — Node ≥ 20 for `npx`, Python for `uvx`. The
+  gateway itself only needs Bun; the child processes resolve their runtimes on the host
+  that runs the gateway, so on a VPS that means the container (see "What `command` can be")
 - Docker (for the production compose stack)
 
 ## Development
@@ -148,6 +150,32 @@ Credentials live in the vault, referenced as `secret:<name>` (or `${ENV_VAR}` to
 gateway's own environment). A credential typed into an env line is refused on every path —
 dashboard form, template install, manifest import — and `renderManifest()` will refuse to
 export a file that contains one, naming the upstream instead of quietly redacting it.
+
+## What `command` can be
+
+Any executable the **gateway host** can resolve — the field is a free-form string, and the
+only rule is that it is not empty. `npx`, `uvx`, `python3`, `node`, `bun`, `docker`,
+`/usr/local/bin/my-server`: all fine. The bundled template catalogue is all `npx`, which
+makes it look narrower than it is.
+
+There is **no shell** (the process is spawned with `shell: false`), so a pipe, redirect,
+glob, `&&` or `$HOME` in the command or arguments is passed to the child as literal bytes
+rather than interpreted. Quote arguments that contain spaces — `--header "Authorization:
+Bearer …"` arrives as one argument, which the naive space split used to break into three.
+
+Runtimes must exist **on the server**, not on your laptop: the shipped image has Node +
+`npx` + `bun`, `python3` + `uv`/`uvx`, `git` and `curl`. It deliberately has **no docker
+CLI**: an upstream that wants to be a container should run as its own service and be
+registered over HTTP — see the sidecar example in `deploy/docker-compose.yml`, which shares
+the gateway's network namespace so it is reachable on `http://localhost:<port>/mcp` without
+TLS and without relaxing the SSRF rules.
+
+Adding or editing an upstream **is arbitrary code execution** on the gateway host, run as
+the gateway's user, with whatever credentials the admin maps into it. Anyone who can sign
+in as `admin` can therefore run anything on that machine: treat an admin account like SSH
+access, and remember that a leaked admin session is a host compromise, not a data leak.
+Every create and connection change records the resulting command line in the audit trail,
+redacted, so the question "what was installed, by whom, when" is answerable.
 
 ## Project layout
 

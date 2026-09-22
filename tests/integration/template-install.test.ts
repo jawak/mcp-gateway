@@ -120,3 +120,25 @@ describe('two Postgres upstreams from one template', () => {
 		expect(scope.some((entry) => entry.upstream.slug === 'pg-prod')).toBe(false);
 	});
 });
+
+describe('a positional template installs a spawn-ready upstream', () => {
+	test('sqlite: the answer goes to argv and resolution reports nothing missing', () => {
+		const created = installFromTemplate('sqlite', 'lite-e2e', { SQLITE_PATH: '/srv/app.db' });
+		expect((created.connection as { args: string[] }).args.at(-1)).toBe('/srv/app.db');
+
+		const record = getUpstreamBySlug('lite-e2e')!;
+		const resolved = resolveEnvRefs(record.envRefs, { openSecret: openSecretByName });
+		// before the fix this reported [{env:'SQLITE_PATH', reason:'no-such-env'}],
+		// which made connectStdio throw UnconfiguredUpstreamError forever
+		expect(resolved.missing).toEqual([]);
+		expect(resolved.values).toEqual({});
+	});
+
+	test('filesystem: same, with the directory as a positional argument', () => {
+		installFromTemplate('filesystem', 'files-e2e', { ALLOWED_DIR: '/srv/data' });
+		const record = getUpstreamBySlug('files-e2e')!;
+		const resolved = resolveEnvRefs(record.envRefs, { openSecret: openSecretByName });
+		expect(resolved.missing).toEqual([]);
+		expect((record.connection as { args: string[] }).args.at(-1)).toBe('/srv/data');
+	});
+});

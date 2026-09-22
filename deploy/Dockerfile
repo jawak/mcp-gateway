@@ -1,11 +1,23 @@
 # mcp-gateway runtime image.
 #
-# Base note: the gateway spawns upstream MCP servers as child processes, so the
-# image needs the runtimes those commands resolve to (npx / uvx / docker CLI).
-# `node:22-bookworm-slim` + bun gives us Node and a package-cache-friendly apt;
-# python/uv is installed for `uvx` servers, and the docker CLI can be mounted in
-# rather than baked in (socket access is a host-level trust decision, not an
-# image one).
+# The gateway spawns upstream MCP servers as child processes, so this image has to
+# carry the runtimes those commands resolve to — `npx` needs Node, `uvx` needs
+# Python + uv, and a bare `python3`/`node`/`bun` command needs its interpreter.
+#
+# There is deliberately NO docker CLI here. Running an upstream as a container is
+# better served by running it as its own service and registering it as an HTTP
+# upstream (see docker-compose.yml's sidecar pattern): mounting /var/run/docker.sock
+# would hand anyone with a dashboard login root-equivalent control of the host,
+# which cancels every containment control in this file.
+#
+# Two environment details that are easy to get wrong and silent when you do:
+#   - HOME is set explicitly. npm and uv put their caches under it, and the spawn
+#     helper drops an unset or empty HOME without complaint, so an operator who
+#     overrides `user: "10001:10001"` (a uid with no /etc/passwd entry) would get a
+#     gateway that starts and then fails every `npx`/`uvx` upstream with an ENOENT
+#     that points nowhere near the cause.
+#   - the account's shell is /bin/sh, not nologin. SHELL is passed to children (it is
+#     on the spawn allowlist), and a child that shells out would exec nologin and die.
 FROM node:22-bookworm-slim AS build
 WORKDIR /app
 RUN apt-get update \
@@ -25,14 +37,27 @@ ENV NODE_ENV=production \
 	MCPGW_HOST=0.0.0.0 \
 	MCPGW_DATA_DIR=/data \
 	MCPGW_ROOT_DIR=/app \
+	HOME=/var/lib/mcpgw \
 	BUN_ENV=production
+# git: `uvx pkg @ git+…` and `npx <scope>/<pkg>#git-url` shell out to it, and the slim
+#   base does not ship it.
+# python3-venv: uv creates ephemeral environments for `uvx`; without the venv module a
+#   fallback to the system interpreter fails at spawn time, not at install time.
+#   Packages that must compile from source need build-essential too — add them in a
+#   downstream image rather than paying for it on every deploy.
 RUN apt-get update \
-	&& apt-get install -y --no-install-recommends ca-certificates curl python3 python3-pip \
+	&& apt-get install -y --no-install-recommends \
+		ca-certificates \
+		curl \
+		git \
+		python3 \
+		python3-pip \
+		python3-venv \
 	&& rm -rf /var/lib/apt/lists/* \
 	&& npm install -g bun@1 \
 	&& pip3 install --no-cache-dir --break-system-packages uv \
 	&& mkdir -p /data \
-	&& useradd --system --create-home --home-dir /var/lib/mcpgw --shell /usr/sbin/nologin mcpgw \
+	&& useradd --system --create-home --home-dir /var/lib/mcpgw --shell /bin/sh mcpgw \
 	&& chown -R mcpgw:mcpgw /data /var/lib/mcpgw
 
 # Full dependency install, deliberately not `--production`: a server-rendered

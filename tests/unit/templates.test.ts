@@ -68,16 +68,54 @@ describe('planInstall — slug handling', () => {
 });
 
 describe('planInstall — non-secret fields and required fields', () => {
-	test('a non-secret field becomes an env reference and an argument', () => {
+	test('a positional answer becomes an argument and NOTHING else', () => {
+		// This test used to assert that the value ALSO became a `${SQLITE_PATH}`
+		// reference. That reference demanded a variable on the gateway host which the
+		// operator had just typed into the form, so resolving failed and the upstream
+		// was reported "unconfigured" and never spawned — the template installed a
+		// dead upstream while the argument sitting next to it was already correct.
 		const sqlite = getTemplate('sqlite');
 		expect(sqlite).toBeDefined();
 		const field = sqlite!.fields.find((f) => !f.secret);
-		expect(field).toBeDefined();
+		expect(field?.placement).toBe('arg');
 
 		const { plan } = planInstall(sqlite!, { [field!.env]: '/data/app.db' }, 'my-db');
-		expect(plan.envRefs[field!.env]).toBe(`\${${field!.env}}`);
-		// the CLI expects it positionally, so the value must also appear in args
 		expect((plan.connection.args as string[]).at(-1)).toBe('/data/app.db');
+		expect(plan.envRefs[field!.env]).toBeUndefined();
+	});
+
+	test('an environment-placement answer becomes a literal env value, not an argument', () => {
+		// server-github reads GITHUB_OWNER from the environment; passing it
+		// positionally would be silently ignored by the child
+		const github = getTemplate('github');
+		expect(github).toBeDefined();
+		const owner = github!.fields.find((f) => f.env === 'GITHUB_OWNER');
+		expect(owner?.placement).toBe('env');
+
+		const token = 'github-personal-access-token-value';
+		const { plan, secrets } = planInstall(
+			github!,
+			{ GITHUB_PERSONAL_ACCESS_TOKEN: token, GITHUB_OWNER: 'acme' },
+			'gh'
+		);
+		expect(plan.envRefs.GITHUB_OWNER).toBe('acme');
+		expect(plan.envRefs.GITHUB_OWNER).not.toBe('${GITHUB_OWNER}');
+		expect(plan.connection.args).not.toContain('acme');
+		// the secret field still seals and references correctly
+		expect(plan.envRefs.GITHUB_PERSONAL_ACCESS_TOKEN).toBe(
+			'secret:gh__github_personal_access_token'
+		);
+		expect(secrets.map((s) => s.name)).toEqual(['gh__github_personal_access_token']);
+	});
+
+	test('a positional install resolves cleanly — nothing is left unconfigured', () => {
+		// the shape of the bug end to end: with only an argument needed, resolution
+		// must report no missing references at all
+		const sqlite = getTemplate('sqlite');
+		const field = sqlite!.fields.find((f) => !f.secret)!;
+		const { plan } = planInstall(sqlite!, { [field.env]: '/data/app.db' }, 'clean-db');
+		const remaining = Object.values(plan.envRefs).filter((ref) => ref.startsWith('${'));
+		expect(remaining).toEqual([]);
 	});
 
 	test('a missing required value is reported by label and nothing is sealed', () => {

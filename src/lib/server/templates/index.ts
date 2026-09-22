@@ -11,7 +11,7 @@
  * point MCPGW_TEMPLATE_CATALOG_URL at their own file to add internal servers.
  */
 import { z } from 'zod';
-import { envRef, secretRef } from '../security/env-resolve.ts';
+import { secretRef } from '../security/env-resolve.ts';
 
 export const templateFieldSchema = z.object({
 	/** Environment variable the value is handed to. */
@@ -20,7 +20,15 @@ export const templateFieldSchema = z.object({
 	help: z.string().min(1),
 	/** Secrets are sealed; plain fields are stored as literals. */
 	secret: z.boolean().default(true),
-	required: z.boolean().default(true)
+	required: z.boolean().default(true),
+	/**
+	 * Where a non-secret answer goes, because the servers disagree about it:
+	 * `server-filesystem` and `server-sqlite` take their target as a positional
+	 * argument, while `server-github` and `server-slack` read extra settings from
+	 * the environment. Guessing wrong is invisible until the child misbehaves, so
+	 * each template declares it instead of relying on a rule that cannot hold.
+	 */
+	placement: z.enum(['arg', 'env']).default('arg')
 });
 
 export const templateSchema = z.object({
@@ -42,9 +50,11 @@ export type Template = z.infer<typeof templateSchema>;
 export const templateListSchema = z.array(templateSchema);
 
 /**
- * Bundled catalogue. Transports chosen the way an operator would run them:
- * `npx` for Node servers, `uvx` for Python ones — both resolved at spawn time by
- * the host, not by the gateway.
+ * Bundled catalogue. Everything here is `npx`, because these are the servers whose
+ * packaging is stable enough to name. `command` is an unrestricted string in the schema
+ * and in the database, so a Python (`uvx`), Deno or absolute-path server is a normal
+ * upstream — it simply has no entry in this list, and the runtime has to exist on the
+ * gateway host rather than being the gateway's business.
  */
 export const BUNDLED_TEMPLATES: Template[] = templateListSchema.parse([
 	{
@@ -66,7 +76,8 @@ export const BUNDLED_TEMPLATES: Template[] = templateListSchema.parse([
 				label: 'Default owner (optional)',
 				help: 'Pre-fills the owner for tools that accept it.',
 				secret: false,
-				required: false
+				required: false,
+				placement: 'env'
 			}
 		],
 		docsUrl: 'https://github.com/github/github-mcp-server',
@@ -170,7 +181,8 @@ export const BUNDLED_TEMPLATES: Template[] = templateListSchema.parse([
 				env: 'SLACK_TEAM_ID',
 				label: 'Team ID',
 				help: 'Found in your workspace URL.',
-				secret: false
+				secret: false,
+				placement: 'env'
 			}
 		],
 		tags: ['chat']
@@ -306,9 +318,13 @@ export function planInstall(
 			// must be a `secret:` reference: without the prefix `parseRef` classifies
 			// it as a literal and the upstream is handed the secret's name as its value
 			envRefs[field.env] = secretRef(secretName);
+		} else if (field.placement === 'env') {
+			// literal non-secret configuration (an owner or team id), stored as the
+			// value itself — a `${VAR}` reference here would demand a variable on the
+			// gateway host that the operator already typed into the form
+			envRefs[field.env] = value;
 		} else {
-			// non-secret values are passed as arguments, exactly as the CLI expects them
-			envRefs[field.env] = envRef(field.env);
+			// a positional argument, exactly as the CLI expects it, and nothing else
 			args.push(value);
 		}
 	}

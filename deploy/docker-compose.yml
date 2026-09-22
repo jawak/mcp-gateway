@@ -3,6 +3,11 @@
 # The worker is a separate service on purpose: probes, retention deletes and
 # snapshots must never delay a tool call. It shares the /data volume read-write,
 # which is safe because SQLite in WAL mode serialises writers with busy_timeout.
+#
+# Adding an upstream that is NOT a Node or Python-on-PATH server: do not mount the
+# Docker socket (that hands anyone with a dashboard login root-equivalent control of
+# this host, which cancels the hardening below). Run it as its own service instead
+# and register it as an HTTP upstream — see the sidecar example at the bottom.
 services:
   caddy:
     image: caddy:2-alpine
@@ -24,9 +29,16 @@ services:
       MCPGW_DATA_DIR: /data
     volumes:
       - mcpgw_data:/data
-      # only needed if you spawn upstreams from containers; mounting the socket
-      # hands the container host-level control, so it is opt-in and documented
-      # - /var/run/docker.sock:/var/run/docker.sock
+      # npm and uv caches. Without this, every container recreate makes `npx -y …` and
+      # `uvx …` re-download their servers, turning a restart into a slow first tool
+      # call and an avoidable dependency on the registry being reachable.
+      - mcpgw_home:/var/lib/mcpgw
+    # The gateway listens on 8080 (Caddy holds TLS on 443), owns /data as its own uid,
+    # and needs no capabilities at all. If you override `user:` with a uid that does
+    # not own the volume, fix the volume ownership — do not drop this setting.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:8080/healthz']
       interval: 30s
@@ -42,9 +54,50 @@ services:
       MCPGW_DATA_DIR: /data
     volumes:
       - mcpgw_data:/data
+      # the worker probes stdio upstreams, so it spawns children too and wants the cache
+      - mcpgw_home:/var/lib/mcpgw
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     depends_on: [gateway]
+
+  # ── sidecar example: one MCP server per database ───────────────────────────────
+  #
+  # Anything that is neither Node-on-PATH nor a Python server can still be an
+  # upstream: run it as a service and point an upstream at it. `network_mode` puts it
+  # in the gateway's own network namespace, so the gateway reaches it on loopback —
+  # which the SSRF guard already permits over plain http, without TLS and without
+  # enabling private-network targets. Give each sidecar its own port and credentials.
+  #
+  # Deliberately commented out: it pulls an image you may not want, and an upstream
+  # row still has to be created in the dashboard before anything is reachable.
+  #
+  # pg-dev-mcp:
+  #   image: supercorp/supergateway:uvx      # supergateway + uv/uvx in one image
+  #   restart: unless-stopped
+  #   network_mode: service:gateway          # shares loopback with the gateway
+  #   # the inner server's own flags and env are its project's business; check them
+  #   command: ['--stdio', 'uvx postgres-mcp --access-mode=restricted',
+  #             '--outputTransport', 'streamableHttp', '--port', '8101']
+  #   environment:
+  #     CONNECTION_STRING: postgres://reader:devpass@pg-dev:5432/app
+  #   depends_on: [gateway]
+  #
+  # pg-prod-mcp: the same block, its own port (8102) and its own credentials.
+  #
+  # Then register two upstreams with transport "Remote HTTP":
+  #   slug pg-dev   url http://localhost:8101/mcp
+  #   slug pg-prod  url http://localhost:8102/mcp
+  # Clients then see pg-dev__query and pg-prod__query, isolated by profile.
+  #
+  # Why not http://pg-dev-mcp:8101/mcp, by service name? Two guard rules refuse it:
+  # plain http to a non-loopback host, and a name resolving into a private range.
+  # Reaching it by name means TLS on the sidecar plus MCPGW_ALLOW_PRIVATE_NETWORK —
+  # reasonable for a genuinely separate network, but do not weaken the defaults to
+  # avoid typing localhost in a form field.
 
 volumes:
   mcpgw_data:
+  mcpgw_home:
   caddy_data:
   caddy_config:

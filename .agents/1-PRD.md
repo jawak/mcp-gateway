@@ -292,7 +292,7 @@ AI coding tool (Claude Code, Cursor, opencode, Windsurf, Claude Desktop) hari in
 
 - Mendukung MCP spec 2025-06-18 ke bawah (negotiasi versi)
 - Terverifikasi di: Claude Code, Claude Desktop (remote), Cursor, opencode, mcp-remote
-- Mendukung Node ≥ 20 / `npx`, `uvx`/Python, dan binary Docker untuk upstream stdio
+- Mendukung Node ≥ 20 / `npx`, `uvx`/Python, dan binary apa pun yang ada di PATH host gateway (tanpa shell: tanpa pipe/redirect/`$VAR`). Server yang ingin jalan sebagai container dijalankan sebagai **service sidecar** lalu didaftarkan lewat HTTP — socket Docker sengaja tidak di-mount karena setara kontrol penuh host
 
 ---
 
@@ -320,7 +320,7 @@ AI coding tool (Claude Code, Cursor, opencode, Windsurf, Claude Desktop) hari in
 
 ## Asumsi
 
-- Gateway berjalan di host tepercaya yang bisa menjangkau upstream (stdio butuh shell + Node/Python/Docker terpasang)
+- Gateway berjalan di host tepercaya: menambah/mengubah upstream = eksekusi kode arbitrer di host itu (setara akses SSH, bukan sekadar akses data). Spawn stdio **tidak** memakai shell (`shell: false`); yang harus terpasang di host adalah runtime upstream-nya (Node/Python/dll.)
 - Kredensial upstream disediakan admin sebagai env var/secret reference sebelum upstream dipakai
 - Klien mendukung MCP Streamable HTTP (atau memakai `mcp-remote` sebagai penerjemah)
 - Upstream MCP tidak bergantung pada state sesi yang ketat antar-request (stateless-friendly)

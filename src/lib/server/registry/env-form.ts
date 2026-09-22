@@ -32,6 +32,84 @@ export function parseEnvLines(text: string): { rows: EnvRow[]; errors: string[] 
 }
 
 /**
+ * Split the arguments field into argv.
+ *
+ * Splitting on spaces is not enough: the pattern the README itself documents —
+ * `--header "Authorization: Bearer …"` — would become three arguments, and the
+ * upstream would fail in a way that looks like a bad token rather than a broken
+ * form. Quotes and backslash escapes are understood; nothing else from a shell is.
+ *
+ * Deliberately NOT supported, because the process is spawned without a shell
+ * (`shell: false`) and pretending otherwise would promise behaviour the child never
+ * sees: no `$VAR` expansion, no globs, no `;`/`|`/`>`/`&&`, no command substitution.
+ * Those characters are passed through as literal bytes, exactly as the child sees them.
+ */
+export function parseArgsLine(text: string): string[] {
+	const args: string[] = [];
+	let current = '';
+	// distinguishes an intentional empty argument ("") from no argument at all
+	let started = false;
+	let quote: '"' | "'" | null = null;
+
+	for (let index = 0; index < text.length; index += 1) {
+		const character = text[index] as string;
+
+		if (quote) {
+			// a backslash escapes inside double quotes only, as in a POSIX shell;
+			// single quotes are literal, which is what makes them useful here
+			if (character === '\\' && quote === '"') {
+				const next = text[index + 1];
+				if (next !== undefined) {
+					current += next;
+					index += 1;
+				}
+				continue;
+			}
+			if (character === quote) {
+				quote = null;
+				continue;
+			}
+			current += character;
+			continue;
+		}
+
+		if (character === '"' || character === "'") {
+			quote = character;
+			started = true;
+			continue;
+		}
+		if (character === '\\') {
+			const next = text[index + 1];
+			if (next !== undefined) {
+				current += next;
+				index += 1;
+				started = true;
+			}
+			continue;
+		}
+		if (/\s/.test(character)) {
+			if (started) {
+				args.push(current);
+				current = '';
+				started = false;
+			}
+			continue;
+		}
+		current += character;
+		started = true;
+	}
+
+	if (quote) {
+		throw new RegistryError(
+			'invalid_args',
+			`arguments have an unclosed ${quote} quote — every quote must be paired`
+		);
+	}
+	if (started) args.push(current);
+	return args;
+}
+
+/**
  * Validate one reference.
  *
  * Returns the stored form (`${VAR}` or `secret:<name>`) or throws with an

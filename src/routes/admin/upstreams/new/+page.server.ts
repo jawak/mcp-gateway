@@ -6,7 +6,12 @@ import {
 	assertValidSlug,
 	setUpstreamEnabled
 } from '$lib/server/registry';
-import { normaliseRef, parseEnvLines, rowsToRefs } from '$lib/server/registry/env-form';
+import {
+	normaliseRef,
+	parseArgsLine,
+	parseEnvLines,
+	rowsToRefs
+} from '$lib/server/registry/env-form';
 import { putSecret, listSecrets } from '$lib/server/governance/secrets';
 import { testUpstream } from '$lib/server/governance/upstream-test';
 import { getTemplate, listTemplates, planInstall } from '$lib/server/templates';
@@ -50,14 +55,15 @@ export const actions = {
 		let connection: StdioConnection | HttpConnection;
 		if (transport === 'stdio') {
 			const command = (values.command ?? '').trim();
-			if (!command) fieldErrors.command = 'Command is required, e.g. npx.';
-			const stdio: StdioConnection = {
-				command,
-				args: (values.args ?? '')
-					.split(' ')
-					.map((part) => part.trim())
-					.filter((part) => part !== '')
-			};
+			if (!command)
+				fieldErrors.command = 'Command is required — any binary on the gateway host’s PATH.';
+			let args: string[] = [];
+			try {
+				args = parseArgsLine(values.args ?? '');
+			} catch (error) {
+				fieldErrors.args = (error as Error).message;
+			}
+			const stdio: StdioConnection = { command, args };
 			if ((values.cwd ?? '').trim()) stdio.cwd = values.cwd!.trim();
 			connection = stdio;
 		} else {

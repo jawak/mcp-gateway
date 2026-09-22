@@ -6,7 +6,12 @@ import { beforeAll, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { normaliseRef, parseEnvLines, rowsToRefs } from '../../src/lib/server/registry/env-form';
+import {
+	normaliseRef,
+	parseArgsLine,
+	parseEnvLines,
+	rowsToRefs
+} from '../../src/lib/server/registry/env-form';
 import { RegistryError } from '../../src/lib/server/registry';
 import { runMigrations } from '../../src/lib/server/db/migrate';
 import { useDatabaseForTests } from '../../src/lib/server/db';
@@ -84,5 +89,55 @@ describe('rowsToRefs', () => {
 	test('maps every row and keeps the env names', () => {
 		const refs = rowsToRefs(parseEnvLines('LOG_LEVEL=debug\nTOKEN=${SMOKE_PRESENT}').rows);
 		expect(refs).toEqual({ LOG_LEVEL: 'debug', TOKEN: '${SMOKE_PRESENT}' });
+	});
+});
+
+describe('parseArgsLine — the arguments field is argv, not a shell command', () => {
+	test('plain arguments split on whitespace', () => {
+		expect(parseArgsLine('-y @modelcontextprotocol/server-postgres')).toEqual([
+			'-y',
+			'@modelcontextprotocol/server-postgres'
+		]);
+	});
+
+	test('run-upon spaces survive quoting — the pattern the README documents', () => {
+		// this used to become three argv entries, so the upstream failed in a way
+		// that looked like a bad token rather than a broken form field
+		expect(
+			parseArgsLine('http://127.0.0.1:3000/mcp --header "Authorization: Bearer abc.def"')
+		).toEqual(['http://127.0.0.1:3000/mcp', '--header', 'Authorization: Bearer abc.def']);
+	});
+
+	test('a quoted value may be attached to a flag', () => {
+		expect(parseArgsLine('--allowed-dir="/srv/my data"')).toEqual(['--allowed-dir=/srv/my data']);
+	});
+
+	test('single quotes are literal, double quotes escape', () => {
+		expect(parseArgsLine('\'$notavar\' "a\\"b"')).toEqual(['$notavar', 'a"b']);
+	});
+
+	test('an explicitly quoted empty argument is preserved', () => {
+		expect(parseArgsLine('a "" b')).toEqual(['a', '', 'b']);
+	});
+
+	test('runs of whitespace and trailing space do not create empty arguments', () => {
+		expect(parseArgsLine('  a    b  ')).toEqual(['a', 'b']);
+		expect(parseArgsLine('')).toEqual([]);
+	});
+
+	test('shell metacharacters are passed through as bytes, because nothing shells out', () => {
+		// the transport spawns with shell:false; promising expansion here would be a lie
+		expect(parseArgsLine('--x a;b --y a|b --z $HOME')).toEqual([
+			'--x',
+			'a;b',
+			'--y',
+			'a|b',
+			'--z',
+			'$HOME'
+		]);
+	});
+
+	test('an unbalanced quote is refused, not silently swallowed', () => {
+		expect(() => parseArgsLine('--header "Bearer oops')).toThrow(/unclosed/);
 	});
 });

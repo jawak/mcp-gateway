@@ -443,7 +443,7 @@ Stack monolith SvelteKit → 3 jenis antarmuka: **endpoint MCP**, **REST read-on
 ## Keamanan
 
 - **Secrets:** `MCPGW_MASTER_KEY` (32 byte, env) → `HKDF-SHA256(master, salt=per-record)` → AES-256-GCM; simpan `cipher/iv/tag/key_ver`. Rotasi: decrypt `key_ver` lama → seal versi baru (job后台). API key & password tidak pernah disimpan terenkripsi (hash only).
-- **Env sanitization saat spawn stdio:** child hanya menerima `PATH`, `HOME`, `LANG`, `NODE_ENV`, `TMPDIR` + env yang dipetakan eksplisit — `MCPGW_MASTER_KEY`/DSN **tidak** diwariskan ke upstream.
+- **Env sanitization saat spawn stdio:** child menerima `PATH`, `HOME`, `LANG`, `LC_ALL`, `NODE_ENV`, `TMPDIR`, `SHELL`, `USER` + env yang dipetakan eksplisit — `MCPGW_MASTER_KEY`/DSN **tidak** diwariskan ke upstream. Catatan: transport SDK menambahkan daftarnya sendiri (`LOGNAME`, `TERM` di POSIX; `USERPROFILE`/`APPDATA`/`SYSTEMROOT` dkk. di Windows), jadi daftar di atas bukan plafon mutlak — keduanya tetap bebas kredensial, dan tes `env-resolve.test.ts` mengunci tidak ada nama di allowlist yang berbentuk rahasia.
 - **Auth & sesi:** argon2id (`m=64MB,t=3,p=4`); cookie `HttpOnly Secure SameSite=Lax`, `expires`; CSRF via `config.csrf` SvelteKit; Bearer untuk `/mcp` (tidak bergantung cookie → tidak bisa CSRF).
 - **SSRF guard:** `ssrfFetch` menolak `http://` kecuali localhost, resolves → blokir `127.0.0.0/8`, `10/8`, `172.16/12`, `192.168/16`, `169.254.169.254`, `::1`, `fe80::/10`; redirect = blokir (kecuali di-whitelist); timeout connect 5 s.
 - **Isolasi scope:** validasi kepemilikan tool→profil terjadi di **setiap** `tools/call`/`resources/read`/`prompts/get` (bukan hanya `list`); uji integrasi wajib: key A memanggil tool milik profil B → `not allowed`.
@@ -451,7 +451,7 @@ Stack monolith SvelteKit → 3 jenis antarmuka: **endpoint MCP**, **REST read-on
 - **Headers:** `Content-Security-Policy` (self + inline-style Tailwind), `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, `X-Frame-Options: DENY`, `Permissions-Policy` minimal; `/mcp` menolak `Origin` browser yang bukan `MCPGW_PUBLIC_URL` (DNS-rebinding/CSRF-adjacent).
 - **Audit & redaksi:** `security/redact.ts` menutup pola token umum (`ghp_`, `github_pat_`, `xoxb-`, `sk-`, JWT, `Bearer …`) di `tool_calls.error`, log pino, dan UI.
 - **Input & DoS:** Zod untuk semua form/JSON; body limit 1 MB (`maxBodySize` Bun); pagination cursor (tanpa offset besar); rate limit admin login per email+IP; `bun:sqlite` prepared statements (anti SQLi).
-- **Supply chain:** `bun install --frozen-lockfile`, Dependabot/Renovate, image non-root (`USER bun`), `read_only` rootfs + volume `/data`, `no-new-privileges`.
+- **Supply chain:** `bun install --frozen-lockfile`, image non-root (`USER mcpgw`), `cap_drop: [ALL]` + `no-new-privileges:true` pada service gateway & worker. **`read_only` rootfs sengaja TIDAK dipakai** (versi awal spesifikasi ini menyebutnya): `npx` menulis cache ke `~/.npm` dan `uvx` ke `~/.cache/uv`, jadi rootfs read-only akan membuat setiap upstream stdio gagal — bukan menguatkan. Yang diisolasi adalah volume `/data` dan cache toolchain lewat named volume.
 - **Secret hygiene:** `.env` di `.gitignore`, `scripts/` tidak menyimpan kredensial, contoh memakai placeholder.
 
 ## Performa
