@@ -212,6 +212,20 @@ export function renderManifest(db: Db = getDb()): string {
 		})
 	};
 
+	// The same check the import runs, now on the way out. Without it the invariant was
+	// enforced on one side of the round-trip only: a value that reached the database by
+	// some other route would leave the building inside a "configuration" file that gets
+	// emailed, committed, and pasted into tickets. Redacting quietly would be worse — a
+	// backup that lies about its contents is not a backup — so this refuses and names
+	// the field instead.
+	const problems = findInlinedSecrets(manifest);
+	if (problems.length > 0) {
+		throw new ManifestError([
+			...problems,
+			'export is refused until these are converted to secrets: create the secret, then reference it as secret:<name>'
+		]);
+	}
+
 	return `# mcp-gateway configuration\n# Secret values are never written here: use \${ENV_VAR} or secret:<name>.\n${yaml.stringify(manifest)}`;
 }
 

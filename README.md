@@ -120,6 +120,35 @@ The dashboard issues a key and shows copy-paste config for each client. The gene
 
 Clients that only speak stdio can bridge through `npx mcp-remote <url> --header "Authorization: Bearer …"`.
 
+## Two databases, one server type
+
+The same MCP server against a dev and a prod database is the normal way to use this:
+uniqueness is enforced on the **slug**, never on the command, so two rows may run the
+identical binary. The slug becomes the tool namespace, which is what keeps them apart.
+
+| Upstream  | Command                                        | Reference                                     | Clients see      |
+| --------- | ---------------------------------------------- | --------------------------------------------- | ---------------- |
+| `pg-dev`  | `npx -y @modelcontextprotocol/server-postgres` | `DATABASE_URL → secret:pg-dev__database_url`  | `pg-dev__query`  |
+| `pg-prod` | identical                                      | `DATABASE_URL → secret:pg-prod__database_url` | `pg-prod__query` |
+
+Each upstream gets its **own child process** — the pool is keyed by slug, not by command,
+so identical binaries are never shared or deduplicated, and editing one connection string
+only reconnects that one.
+
+Isolate them with two profiles rather than one profile with deny rules: create `dev-only`
+linked to `pg-dev` and `prod-only` linked to `pg-prod`, then issue one API key per profile.
+Scope is re-evaluated on every request at both `tools/list` and `tools/call`, so a dev key
+that guesses `pg-prod__query` is refused rather than merely hidden from the listing.
+
+Slugs must match `^[a-z0-9-]{2,32}$` — `pg-dev`, not `pg_dev`. Point the prod connection at
+a read-only role, and a replica if you have one; the gateway forwards what the model asks
+for, it does not know that a query was meant to be read-only.
+
+Credentials live in the vault, referenced as `secret:<name>` (or `${ENV_VAR}` to read the
+gateway's own environment). A credential typed into an env line is refused on every path —
+dashboard form, template install, manifest import — and `renderManifest()` will refuse to
+export a file that contains one, naming the upstream instead of quietly redacting it.
+
 ## Project layout
 
 ```

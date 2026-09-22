@@ -132,7 +132,7 @@ export const actions = {
 		const template = getTemplate(templateId);
 		if (!template) return fail(400, { error: 'Unknown template.' });
 
-		const slug = (String(data.get('slug') ?? '') || templateId).trim();
+		const rawSlug = String(data.get('slug') ?? '') || templateId;
 		const answers: Record<string, string> = {};
 		for (const field of template.fields)
 			answers[field.env] = String(data.get(`field:${field.env}`) ?? '');
@@ -140,13 +140,16 @@ export const actions = {
 		const actor = { actorId: locals.user?.id ?? null, ip: getClientAddress() };
 		let planned;
 		try {
-			planned = planInstall(template, answers, slug);
+			planned = planInstall(template, answers, rawSlug);
 		} catch (error) {
 			return fail(400, { error: (error as Error).message });
 		}
 		if (planned.missing.length > 0) {
 			return fail(400, { error: `Missing required values: ${planned.missing.join(', ')}` });
 		}
+		// the normalised slug, so a redirect cannot point at a row that was created
+		// under a different name
+		const slug = planned.plan.slug;
 
 		for (const secret of planned.secrets) putSecret(secret.name, secret.value, actor);
 

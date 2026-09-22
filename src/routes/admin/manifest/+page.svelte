@@ -36,6 +36,16 @@
 		</div>
 	{/if}
 
+	{#if data.exportError}
+		<div
+			class="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:bg-rose-950 dark:text-rose-200"
+			role="alert"
+		>
+			<p class="font-medium">Export refused — a value here looks like a real credential:</p>
+			<p class="mt-1">{data.exportError}</p>
+		</div>
+	{/if}
+
 	{#if form?.applied}
 		<div
 			class="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200"

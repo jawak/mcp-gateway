@@ -128,6 +128,24 @@ A fresh clone could not start: every request returned 500. Four defects, one sym
    precisely what a new operator does. Same lesson as the first-run cluster: the tests
    exercised the mechanism, not the entrypoint a human uses.
 
+### Credential boundary (found while answering "can I register two Postgres upstreams?")
+
+9. **BR-09 was enforced in the wrong layer.** The dashboard form refused a credential
+   typed into an env line, but the form is not the only writer: templates, manifest
+   apply and any future API call the registry directly, and `createUpstream` stored
+   `envRefs` verbatim. One of those paths was in fact broken — the template install
+   wrote a bare secret name, which reads back as a _literal_, so the spawned server
+   received the secret's name as its `DATABASE_URL`. The rule now lives at the registry
+   boundary, and `renderManifest()` runs the same detection on the way out: previously
+   the check existed only on import, so a bad value could leave the building inside a
+   file that gets committed, emailed and pasted into tickets.
+
+   Two details worth recording because they are easy to get wrong again: the detector
+   fires on the colon in `secret:pg-dev__url`, so it may only be applied to literal
+   values — an anti-false-positive test locks that; and secret _existence_ is
+   deliberately not checked at the boundary, because applying a manifest to an empty
+   box legitimately references secrets that arrive later.
+
 ## Security checklist
 
 | Item                         | Requirement                                      | Status | Evidence                                                                                                                                                            |

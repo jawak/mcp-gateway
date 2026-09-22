@@ -11,6 +11,7 @@
  * point MCPGW_TEMPLATE_CATALOG_URL at their own file to add internal servers.
  */
 import { z } from 'zod';
+import { envRef, secretRef } from '../security/env-resolve.ts';
 
 export const templateFieldSchema = z.object({
 	/** Environment variable the value is handed to. */
@@ -268,15 +269,24 @@ export type InstallPlan = {
 /**
  * Turn a template plus the operator's answers into an upstream definition.
  *
- * Secret answers become sealed values plus a `secret:<slug>__<ENV>` reference in
- * the upstream definition, which is why the exported manifest for an installed
- * template still contains no credentials (BR-09).
+ * This is the ONLY place that turns template answers into an upstream: the gallery
+ * install and the "start from a template" form both come through here. Having two
+ * copies is how one of them ended up writing a bare secret name (which resolves as a
+ * literal, so the child received the secret's *name* instead of its value) while the
+ * other wrote the correct reference.
+ *
+ * Secret answers become sealed values plus a `secret:<slug>__<ENV>` reference in the
+ * upstream definition, which is why the exported manifest for an installed template
+ * still contains no credentials (BR-09).
  */
 export function planInstall(
 	template: Template,
 	answers: Record<string, string>,
-	slug: string
+	rawSlug: string
 ): { plan: InstallPlan; secrets: Array<{ name: string; value: string }>; missing: string[] } {
+	// normalised here so every caller agrees on the slug, the secret names derived
+	// from it, and therefore which reference resolves
+	const slug = rawSlug.trim().toLowerCase();
 	const envRefs: Record<string, string> = {};
 	const args = [...template.args];
 	const secrets: Array<{ name: string; value: string }> = [];
@@ -293,16 +303,19 @@ export function planInstall(
 				.toLowerCase()
 				.replace(/[^a-z0-9_-]/g, '-');
 			secrets.push({ name: secretName, value });
-			envRefs[field.env] = secretName;
+			// must be a `secret:` reference: without the prefix `parseRef` classifies
+			// it as a literal and the upstream is handed the secret's name as its value
+			envRefs[field.env] = secretRef(secretName);
 		} else {
-			envRefs[field.env] = `\${${field.env}}`;
+			// non-secret values are passed as arguments, exactly as the CLI expects them
+			envRefs[field.env] = envRef(field.env);
 			args.push(value);
 		}
 	}
 
 	const connection: Record<string, unknown> =
 		template.transport === 'stdio'
-			? { command: template.command, args }
+			? { command: template.command ?? 'npx', args }
 			: {
 					url: template.url,
 					authStyle: template.authStyle === 'none' ? 'none' : template.authStyle

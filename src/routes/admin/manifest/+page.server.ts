@@ -8,7 +8,18 @@ import {
 	renderManifest
 } from '$lib/server/registry/manifest';
 
-export const load = (() => ({ current: renderManifest() })) satisfies PageServerLoad;
+export const load = (() => {
+	// Export refuses to write a file that would carry a real credential. Correct, but
+	// an operator who triggers it needs the reason in front of them — not an error
+	// page, since the rest of this page is how they fix it.
+	try {
+		return { current: renderManifest(), exportError: undefined as string | undefined };
+	} catch (error) {
+		if (error instanceof ManifestError)
+			return { current: '', exportError: error.issues.join(' · ') };
+		throw error;
+	}
+}) satisfies PageServerLoad;
 
 /**
  * Import and export `gateway.yaml` (T-38).

@@ -11,7 +11,7 @@
  * Resolution happens at spawn time, inside this process: plaintext secrets never
  * touch the database, the API, the logs, or the dashboard.
  */
-import { redactString } from './redact.ts';
+import { findSecretLike, redactString } from './redact.ts';
 
 export type Ref =
 	| { kind: 'secret'; name: string }
@@ -38,6 +38,23 @@ export function secretRef(name: string): string {
 
 export function envRef(name: string): string {
 	return `\${${name}}`;
+}
+
+/**
+ * Does this reference value look like a credential typed in directly?
+ *
+ * Only literal values are examined. `secret:...` and `${...}` are references by
+ * construction — and `findSecretLike` fires on the colon in `secret:pg-dev__url`, so
+ * checking references as well would reject every legitimate secret reference in the
+ * database. That ordering is the whole trick; the rest of the codebase relies on it.
+ *
+ * Used at the registry boundary rather than only in the dashboard form, so that any
+ * caller — template install, manifest apply, a future API — is held to the same rule.
+ */
+export function credentialLookingRef(ref: string): string[] {
+	if (typeof ref !== 'string' || ref === '') return [];
+	if (parseRef(ref).kind !== 'literal') return [];
+	return findSecretLike(ref);
 }
 
 export type ResolveDeps = {

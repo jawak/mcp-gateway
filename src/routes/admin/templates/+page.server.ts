@@ -1,6 +1,6 @@
 import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-import { getTemplate, listTemplates } from '$lib/server/templates';
+import { getTemplate, listTemplates, planInstall } from '$lib/server/templates';
 import { createUpstream, RegistryError } from '$lib/server/registry';
 import { putSecret } from '$lib/server/governance/secrets';
 import { testUpstream } from '$lib/server/governance/upstream-test';
@@ -43,45 +43,21 @@ export const actions = {
 		for (const field of template.fields)
 			answers[field.env] = String(data.get(`field:${field.env}`) ?? '').trim();
 
-		const missing = template.fields
-			.filter((field) => field.required && !answers[field.env])
-			.map((field) => field.label);
-		if (missing.length > 0) {
-			return fail(400, {
-				error: `Missing: ${missing.join(', ')}`,
-				openId: templateId,
-				slug,
-				answers
-			});
-		}
-
 		const actor = { actorId: locals.user?.id ?? null, ip: getClientAddress() };
-		const envRefs: Record<string, string> = {};
-		const args = [...template.args];
-		for (const field of template.fields) {
-			const value = answers[field.env];
-			if (!value) continue;
-			if (field.secret) {
-				const secretName = `${slug}__${field.env.toLowerCase()}`
-					.toLowerCase()
-					.replace(/[^a-z0-9_-]/g, '-');
-				try {
-					putSecret(secretName, value, actor);
-				} catch (error) {
-					return failure((error as Error).message, slug, answers);
-				}
-				envRefs[field.env] = `secret:${secretName}`;
-			} else {
-				// non-secret values are passed as arguments, exactly as the CLI expects them
-				envRefs[field.env] = `\${${field.env}}`;
-				args.push(value);
+		// One implementation for both template paths; this route used to keep its own
+		// copy of the loop, which is how the two drifted apart.
+		const { plan, secrets, missing } = planInstall(template, answers, slug);
+		if (missing.length > 0) return failure(`Missing: ${missing.join(', ')}`, slug, answers);
+
+		// sealed before the upstream is created, so a reference can never point at a
+		// secret that does not exist
+		for (const secret of secrets) {
+			try {
+				putSecret(secret.name, secret.value, actor);
+			} catch (error) {
+				return failure((error as Error).message, slug, answers);
 			}
 		}
-
-		const connection: StdioConnection | HttpConnection =
-			template.transport === 'stdio'
-				? { command: template.command ?? 'npx', args }
-				: { url: template.url as string, authStyle: template.authStyle };
 
 		// installed first, then probed: the probe decides whether it is enabled,
 		// and it needs the row to exist
@@ -89,11 +65,12 @@ export const actions = {
 		try {
 			const created = createUpstream(
 				{
-					slug,
-					name: template.name,
-					transport: template.transport,
-					connection,
-					envRefs,
+					slug: plan.slug,
+					name: plan.name,
+					transport: plan.transport,
+					connection: plan.connection as StdioConnection | HttpConnection,
+					envRefs: plan.envRefs,
+					...(plan.headersRef ? { headersRef: plan.headersRef } : {}),
 					pin: 'pinned',
 					enabled: true
 				},

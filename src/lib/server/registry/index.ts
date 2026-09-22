@@ -13,6 +13,7 @@ import { and, count, eq, inArray } from 'drizzle-orm';
 import { getDb, type Db } from '../db/index.ts';
 import { apiKeys, kv, profileUpstreams, profiles, upstreams } from '../db/schema.ts';
 import { MIGRATE_HINT, schemaIsPresent } from '../db/migrate.ts';
+import { credentialLookingRef } from '../security/env-resolve.ts';
 import { toUpstreamRecord } from '../upstream/health.ts';
 import { uuidv7 } from '../../shared/ids.ts';
 import { isPast, nowIso } from '../../shared/time.ts';
@@ -330,6 +331,32 @@ export function assertValidSlug(slug: string): void {
 	}
 }
 
+/**
+ * Every reference must be a reference.
+ *
+ * The dashboard form has always refused a credential typed into an env line, but the
+ * form is not the only way in: templates, manifest apply, and anything written later
+ * call the registry directly. Enforcing it here means an inline secret cannot be
+ * stored at all, so it also cannot leak through a manifest export or a support bundle.
+ */
+function assertRefsAreSafe(slug: string, envRefs: Record<string, string>, headersRef?: string) {
+	const offenders: string[] = [];
+	for (const [env, ref] of Object.entries(envRefs ?? {})) {
+		const hits = credentialLookingRef(ref);
+		if (hits.length > 0) offenders.push(`${env} (${hits.join(', ')})`);
+	}
+	if (headersRef !== undefined && headersRef !== null) {
+		const hits = credentialLookingRef(headersRef);
+		if (hits.length > 0) offenders.push(`headers (${hits.join(', ')})`);
+	}
+	if (offenders.length > 0) {
+		throw new RegistryError(
+			'inlined_secret',
+			`${slug}: a credential appears to be written directly in ${offenders.join(', ')} — store it as a secret and reference it as secret:<name>, or as \${ENV_VAR}`
+		);
+	}
+}
+
 export type CreateUpstreamInput = Omit<UpstreamPatch, 'id'> & {
 	slug: string;
 	name: string;
@@ -348,6 +375,7 @@ export function createUpstream(
 	if (snapshot.upstreamsBySlug.has(input.slug)) {
 		throw new RegistryError('duplicate_slug', `an upstream named "${input.slug}" already exists`);
 	}
+	assertRefsAreSafe(input.slug, input.envRefs ?? {}, input.headersRef ?? undefined);
 	const id = input.id ?? uuidv7();
 	const createdAt = nowIso();
 	db.insert(upstreams)
@@ -396,6 +424,13 @@ export function updateUpstream(
 	if (!existing) throw new RegistryError('not_found', 'upstream not found');
 	if (patch.timeoutMs !== undefined && (patch.timeoutMs < 1_000 || patch.timeoutMs > 600_000)) {
 		throw new RegistryError('invalid_timeout', 'timeout must be between 1s and 600s');
+	}
+	if (patch.envRefs !== undefined || patch.headersRef !== undefined) {
+		assertRefsAreSafe(
+			existing.slug,
+			patch.envRefs ?? existing.envRefs ?? {},
+			patch.headersRef ?? undefined
+		);
 	}
 	db.update(upstreams)
 		.set({
