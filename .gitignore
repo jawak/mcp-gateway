@@ -30,6 +30,11 @@ vite.config.ts.timestamp-*
 
 # Local compose/env overrides
 deploy/.env
+
+# Working notes for the agent pair (PRD / tech spec / task list). Local only:
+# they are a scratchpad, not part of what ships or what CI reads. The durable
+# engineering record that belongs in the repo is docs/nfr-report.md.
+/.agents/
 docker-compose.override.yml
 
 # Test & tool artifacts

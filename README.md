@@ -2,7 +2,7 @@
 
 One MCP endpoint for many MCP servers. Point your AI client (Claude Code, Claude Desktop, Cursor, opencode, Windsurf) at a single URL + API key and get every upstream MCP tool the gateway admin has configured — stdio servers are spawned on the server, so nothing is installed and no credential ever lives on your laptop.
 
-Specs and status: [`.agents/1-PRD.md`](./.agents/1-PRD.md) → [`.agents/2-TECH-SPEC.md`](./.agents/2-TECH-SPEC.md) → [`.agents/3-TASKS.md`](./.agents/3-TASKS.md) · NFR evidence: [`docs/nfr-report.md`](./docs/nfr-report.md)
+Measured behaviour and the defects found getting here: [`docs/nfr-report.md`](./docs/nfr-report.md). Design notes and the working task list live in `.agents/`, which is local-only and not published with the repo.
 
 ## Stack
 

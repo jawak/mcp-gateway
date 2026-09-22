@@ -1,5 +1,5 @@
 /**
- * Database schema (T-04) — mirrors ".agents/2-TECH-SPEC.md → BAGIAN 2".
+ * Database schema (T-04) — one table per spec section; migrations in `drizzle/` are the source of truth.
  *
  * Conventions:
  *  - ids are UUIDv7 TEXT (`shared/ids.ts`): time-sortable, safe across replicas.
