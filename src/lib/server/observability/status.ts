@@ -14,6 +14,17 @@ export const status = {
 	lastHealthSweepAt: undefined as Date | undefined
 };
 
+/**
+ * The shape callers can build and hand in instead of reading the global.
+ *
+ * `healthzPayload` reads this global by default, which made a unit test fail on CI
+ * while passing on a laptop: bun runs test files in one process and the file order
+ * differs per machine, so a sweep test running first left counters set and the
+ * healthz payload asserting "sessions: 0" broke. Anything that depends on file
+ * order is not a test — hand in a snapshot instead.
+ */
+export type ProcessStatus = typeof status;
+
 export function uptimeSeconds(): number {
 	return Math.floor((Date.now() - status.startedAt.getTime()) / 1000);
 }

@@ -6,6 +6,7 @@ function router(
 		sveltekit?: (request: Request, context: RequestContext) => Promise<Response>;
 		mcp?: (request: Request, context: RequestContext) => Promise<Response>;
 		maxBodyBytes?: number;
+		healthz?: () => Record<string, unknown>;
 	} = {}
 ) {
 	return createFetchHandler({
@@ -14,6 +15,19 @@ function router(
 			(async (request) =>
 				new Response(`sveltekit:${new URL(request.url).pathname}`, { status: 200 })),
 		...(overrides.mcp ? { mcp: overrides.mcp } : {}),
+		// a snapshot, not the global: bun runs test files in one process and the file
+		// order differs per machine, so a sweep test running first would leave counters
+		// set and this file's healthz assertions would fail on CI while passing locally
+		healthz:
+			overrides.healthz ??
+			(() => ({
+				ok: true,
+				version: '0.0.1-test',
+				uptime_s: 0,
+				sessions: 0,
+				upstreams: { live: 0, healthy: 0, degraded: 0, down: 0, unconfigured: 0 },
+				last_health_sweep: null
+			})),
 		version: '0.0.1-test',
 		trustProxy: true,
 		maxBodyBytes: overrides.maxBodyBytes ?? 1_048_576

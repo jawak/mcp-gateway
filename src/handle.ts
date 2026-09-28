@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto';
 import { json } from './lib/server/http/bridge.ts';
 import { clientIp } from './lib/server/http/forwarded.ts';
 import { getConfig } from './lib/server/config.ts';
-import { status, uptimeSeconds } from './lib/server/observability/status.ts';
+import { status, type ProcessStatus } from './lib/server/observability/status.ts';
 import { tryHandleGatewayRoute } from './lib/server/gateway-routes.ts';
 import type { MigrationsState } from './lib/server/db/migrate.ts';
 
@@ -47,6 +47,12 @@ export type RouterDeps = {
 	 * not the routing layer's.
 	 */
 	readiness?: () => MigrationsState;
+	/**
+	 * Health payload builder. Defaults to reading the process-status global — which
+	 * is file-order-dependent under a single-process test runner, so tests hand in
+	 * a snapshot instead. See `ProcessStatus`.
+	 */
+	healthz?: () => Record<string, unknown>;
 };
 
 export function createFetchHandler(deps: RouterDeps): (request: Request) => Promise<Response> {
@@ -82,7 +88,7 @@ export function createFetchHandler(deps: RouterDeps): (request: Request) => Prom
 		const gatewayResponse = await tryHandleGatewayRoute(request, context, {
 			mcp: mcp ?? (async () => notMounted()),
 			metrics,
-			healthz: () => healthzPayload(version),
+			healthz: deps.healthz ?? (() => healthzPayload(version)),
 			maxBodyBytes,
 			readiness: deps.readiness
 		});
@@ -92,20 +98,23 @@ export function createFetchHandler(deps: RouterDeps): (request: Request) => Prom
 	};
 }
 
-export function healthzPayload(version: string): Record<string, unknown> {
+export function healthzPayload(
+	version: string,
+	snapshot: ProcessStatus = status
+): Record<string, unknown> {
 	return {
 		ok: true,
 		version,
-		uptime_s: uptimeSeconds(),
-		sessions: status.activeSessions,
+		uptime_s: Math.floor((Date.now() - snapshot.startedAt.getTime()) / 1000),
+		sessions: snapshot.activeSessions,
 		upstreams: {
-			live: status.liveUpstreams,
-			healthy: status.upstreamsHealthy,
-			degraded: status.upstreamsDegraded,
-			down: status.upstreamsDown,
-			unconfigured: status.upstreamsUnconfigured
+			live: snapshot.liveUpstreams,
+			healthy: snapshot.upstreamsHealthy,
+			degraded: snapshot.upstreamsDegraded,
+			down: snapshot.upstreamsDown,
+			unconfigured: snapshot.upstreamsUnconfigured
 		},
-		last_health_sweep: status.lastHealthSweepAt?.toISOString() ?? null
+		last_health_sweep: snapshot.lastHealthSweepAt?.toISOString() ?? null
 	};
 }
 
