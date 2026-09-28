@@ -26,8 +26,11 @@ function arg(name: string, fallback?: string): string {
 }
 
 const base = arg('base-url', 'http://localhost:8080').replace(/\/$/, '');
-const email = arg('smoke-email', 'admin@example.com');
-const password = arg('smoke-password', 'bootstrap-pass-123');
+// env wins over the CLI flag: the docstring above promises MCPGW_SMOKE_* and CI
+// bootstraps its admin with a password that differs from the default — env must
+// be readable or login fails with a 401 pointing at authentication, not the mismatch
+const email = process.env.MCPGW_SMOKE_EMAIL ?? arg('smoke-email', 'admin@example.com');
+const password = process.env.MCPGW_SMOKE_PASSWORD ?? arg('smoke-password', 'bootstrap-pass-123');
 const metricsToken = process.env.MCPGW_METRICS_TOKEN ?? '';
 const fixture = resolve(import.meta.dirname, '../tests/fixtures/echo-mcp-server.ts');
 const slug = `smoke-${Math.random().toString(36).slice(2, 8)}`;

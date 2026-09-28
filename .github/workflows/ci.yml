@@ -61,6 +61,12 @@ jobs:
             exit 1
           fi
       - name: Smoke test
+        env:
+          # must match the bootstrap above, or login fails with a 401 that looks like
+          # an authentication fault instead of the credential mismatch it is
+          MCPGW_SMOKE_EMAIL: admin@example.com
+          MCPGW_SMOKE_PASSWORD: ci-bootstrap-password
+          MCPGW_METRICS_TOKEN: ci-metrics-token-0123456789
         run: bun run scripts/smoke.ts --base-url http://localhost:4500
       - name: Stop gateway
         if: always()
