@@ -36,7 +36,10 @@ jobs:
         env:
           MCPGW_DATA_DIR: ${{ runner.temp }}/mcpgw
           MCPGW_ROOT_DIR: ${{ github.workspace }}
-          MCPGW_MASTER_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+          # quoted: unquoted, YAML parses 64 zeros as an octal number and the step
+          # receives the string "0", which the config validator correctly refuses —
+          # the gateway then dies at boot and the real failure hides below
+          MCPGW_MASTER_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
           MCPGW_PORT: '4500'
           MCPGW_PUBLIC_URL: http://localhost:4500
           MCPGW_ADMIN_EMAIL: admin@example.com
@@ -49,6 +52,14 @@ jobs:
             curl -fsS http://localhost:4500/healthz >/dev/null && break
             sleep 1
           done
+          if ! curl -fsS http://localhost:4500/healthz > /dev/null; then
+            # the loop cannot fail the step (curl's failure is not the last command in
+            # the && list), so a gateway that never came up passed silently and smoke
+            # aborted with an error pointing at the wrong thing
+            echo "::error::gateway did not come up within 30s"
+            kill "$(cat ${{ runner.temp }}/gateway.pid)" 2>/dev/null || true
+            exit 1
+          fi
       - name: Smoke test
         run: bun run scripts/smoke.ts --base-url http://localhost:4500
       - name: Stop gateway
