@@ -25,7 +25,9 @@ describe('redactString', () => {
 		['aws', 'AKIAIOSFODNN7EXAMPLE'],
 		['gitlab', 'glpat-AbCdEf1234567890'],
 		['npm', `npm_${'a'.repeat(36)}`],
-		['stripe', `sk_live_${'a'.repeat(26)}`],
+		// built from parts like the npm fixture above: a literal live-shaped token trips
+	// GitHub push protection on every push — do not "simplify" this back to a string
+	['stripe', `sk_live_${'a'.repeat(26)}`],
 		[
 			'jwt',
 			'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk'
