@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `http://<ip>:<port>` now works for private and loopback public URLs (a VM's local IP)
+  in production, with an `MCPGW_ALLOW_HTTP=true` opt-in for plain http to public hosts.
+
 ## [0.1.0] - 2026-09-29
 
 Initial public release of mcp-gateway: one MCP endpoint for many MCP servers. Point

@@ -148,9 +148,11 @@ curl -i http://127.0.0.1:8080/healthz
 
 - `MCPGW_MASTER_KEY` is required: exactly 64 hex characters (`openssl rand -hex 32`). A
   container without it dies at boot with a `ConfigError`.
-- `MCPGW_PUBLIC_URL` must be **https://**: the image runs `NODE_ENV=production` and the
-  config refuses an `http://` public origin at boot. The origin is used for Origin
-  checks and client snippets, so no `http://` value works.
+- `MCPGW_PUBLIC_URL`: an `https://` domain or IP always works, and the origin is used
+  for Origin checks and client snippets. `http://<ip>:<port>` works for private and
+  loopback hosts (a VM's local IP over plain http, no extra env). Plain http to a
+  public host is refused at boot, since the image runs `NODE_ENV=production`; set
+  `MCPGW_ALLOW_HTTP=true` if that is intentional.
 - `MCPGW_ADMIN_EMAIL` / `MCPGW_ADMIN_PASSWORD` bootstrap the first-run admin at boot. A
   password shorter than 12 characters is logged and skipped, which is not fatal, but it
   leaves no admin behind. Once you've created a real account, remove the vars and
