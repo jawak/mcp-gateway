@@ -1,0 +1,66 @@
+name: Bug report
+description: Report a problem with the MCP gateway
+labels:
+  - bug
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of the bug.
+      placeholder: What happened, and when did it start?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: One line per step.
+      placeholder: |
+        1. Configure the gateway with a minimal mcpServers entry
+        2. Start the gateway
+        3. Run the failing tool call
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual behavior
+      description: What you expected to happen, and what actually happened.
+      placeholder: |
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
+  - type: dropdown
+    id: client-type
+    attributes:
+      label: Client type
+      description: Which MCP client were you using when the bug occurred?
+      multiple: false
+      options:
+        - Claude Code
+        - Claude Desktop
+        - Cursor
+        - opencode
+        - Windsurf
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: gateway-version
+    attributes:
+      label: Gateway version
+      description: The version shown by `/healthz` and the dashboard footer.
+      placeholder: e.g. 0.1.0
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >-
+        Relevant log output. NEVER paste `MCPGW_*` values, Authorization headers,
+        API keys or credentials - redact them.
+      placeholder: One line per log entry, redacted.
+      render: shell

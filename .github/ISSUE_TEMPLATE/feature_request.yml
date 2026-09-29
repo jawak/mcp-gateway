@@ -1,0 +1,33 @@
+name: Feature request
+description: Suggest an idea for the MCP gateway
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / use case
+      description: What problem are you trying to solve, and what were you doing when you hit this limitation?
+      placeholder: Describe the use case.
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed solution
+      description: What would you like the gateway to do instead?
+      placeholder: Describe the change you would like.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds or other approaches you already tried.
+      placeholder: Describe the alternatives.
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Any other context or screenshots.
+      placeholder: Add any other context.
