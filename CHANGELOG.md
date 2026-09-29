@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- _pending:_ the CI container-smoke change (a `.github/workflows/ci.yml` edit) is waiting on a push granted OAuth `workflow` scope.
+
+## [0.1.2] - 2026-09-29
+
+### Fixed
+
+- the container image ships its SQL migrations, so a fresh `docker run` boots; boot-failure log entries now name the exact cause.
+
 ## [0.1.1] - 2026-09-29
 
 ### Added
