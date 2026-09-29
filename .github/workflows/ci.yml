@@ -77,6 +77,11 @@ jobs:
     needs: verify
     steps:
       - uses: actions/checkout@v4
+      # bun is not preinstalled on the runner (setup-bun puts it on PATH): the
+      # bun install below and the smoke script exit 127 without it
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
       - uses: docker/build-push-action@v6
         with:
           file: deploy/Dockerfile
