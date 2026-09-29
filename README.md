@@ -94,20 +94,88 @@ otherwise `/metrics` correctly answers `401` and those checks are skipped, not f
 
 ## Deploy (VPS)
 
+### Pull-first quickstart
+
+Now that the image is published to ghcr.io, the install path is pull-first. Start the
+stack:
+
+```sh
+cd deploy && cp .env.example .env      # required BEFORE compose: env_file: .env
+docker compose up -d                    # pulls ghcr.io/jawak/mcp-gateway:0.1 — no local build needed
+```
+
+Edit the Caddyfile's `mcp.example.com` to your hostname first.
+
+Three services: Caddy (TLS, SSE-safe proxying), the gateway, and a separate worker so
+maintenance never delays a request. `/data` holds the SQLite database and snapshots —
+back that volume up.
+
+### Upgrades
+
+To upgrade, run `docker compose pull && docker compose up -d`. The pull re-tags the
+service image to the newest `0.1.x` and `up -d` recreates the containers, so this tracks
+the 0.1 line unless `MCPGW_IMAGE` is overridden.
+
+### Build the image locally (optional)
+
 ```sh
 cd deploy && cp .env.example .env
 docker build -f Dockerfile -t ghcr.io/jawak/mcp-gateway:0.1 ..   # optional: build locally if you are ahead of the latest release
 docker compose up -d    # runs ghcr.io/jawak/mcp-gateway:0.1 (pulled, or the local build above)
 ```
 
-Three services: Caddy (TLS, SSE-safe proxying), the gateway, and a separate worker so
-maintenance never delays a request. `/data` holds the SQLite database and snapshots —
-back that volume up.
-
 `deploy/docker-compose.yml` defaults `MCPGW_IMAGE` to `ghcr.io/jawak/mcp-gateway:0.1`,
 which the release workflow tags per release. The optional build above tags your local
 build with the same name, so compose runs it instead of pulling whenever you are ahead
-of the latest release. Edit the Caddyfile's `mcp.example.com` to your hostname first.
+of the latest release.
+
+### Run a standalone container (no compose)
+
+Without compose, the gateway is one container:
+
+```sh
+docker run -d --name mcp-gateway \
+  -p 8080:8080 \
+  -v mcpgw_data:/data \
+  -e MCPGW_MASTER_KEY="$(openssl rand -hex 32)" \
+  -e MCPGW_PUBLIC_URL="https://mcp.example.com" \
+  -e MCPGW_ADMIN_EMAIL="admin@example.com" \
+  -e MCPGW_ADMIN_PASSWORD="<min 12 chars>" \
+  -e MCPGW_TRUST_PROXY=false \
+  ghcr.io/jawak/mcp-gateway:0.1
+curl -i http://127.0.0.1:8080/healthz
+```
+
+- `MCPGW_MASTER_KEY` is required: exactly 64 hex characters (`openssl rand -hex 32`). A
+  container without it dies at boot with a `ConfigError`.
+- `MCPGW_PUBLIC_URL` must be **https://**: the image runs `NODE_ENV=production` and the
+  config refuses an `http://` public origin at boot. The origin is used for Origin
+  checks and client snippets, so no `http://` value works.
+- `MCPGW_ADMIN_EMAIL` / `MCPGW_ADMIN_PASSWORD` bootstrap the first-run admin at boot. A
+  password shorter than 12 characters is logged and skipped, which is not fatal, but it
+  leaves no admin behind. Once you've created a real account, remove the vars and
+  recreate the container (`docker update` cannot change env).
+- `MCPGW_TRUST_PROXY=false` is set explicitly because the default is `true` even when
+  unset. `X-Forwarded-For` is client-spoofable, which poisons rate limits and the audit
+  trail on a bare, unproxied run.
+- Keep the default port 8080: the in-image HEALTHCHECK hardcodes
+  `http://127.0.0.1:8080/healthz`. Changing `MCPGW_PORT` requires also overriding
+  `--health-cmd`, or Docker marks the container `unhealthy` while the gateway keeps
+  running on the port it was given.
+- If the container exits immediately, `docker logs mcp-gateway` shows the config error.
+- A standalone run serving real upstreams over time also wants a persistent
+  `/var/lib/mcpgw` volume, or npm and uv caches re-download on every recreate.
+
+### Version tags
+
+| Tag      | What it follows                                                                                            |
+| -------- | ---------------------------------------------------------------------------------------------------------- |
+| `0.1.0`  | exact pin                                                                                                  |
+| `0.1`    | floats on patch updates within the 0.1.x line only; a future 0.2.x publishes `0.2` and never re-tags `0.1` |
+| `latest` | floats to the newest release                                                                               |
+
+After it's up, the dashboard issues the keys; see [Client setup](#client-setup) below
+for pointing your clients at the gateway.
 
 ## Client setup
 
