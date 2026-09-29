@@ -92,6 +92,93 @@ bun run loadtest  --base-url http://localhost:8080 --sessions 200 --burst 200
 If the instance was started with `MCPGW_METRICS_TOKEN`, export it for the script too —
 otherwise `/metrics` correctly answers `401` and those checks are skipped, not failed.
 
+## Configuration
+
+Every setting the gateway reads comes from the environment and is validated by
+`src/lib/server/config.ts`, which throws one aggregated `ConfigError` naming every
+offending variable at boot. Blank variables count as unset, so the defaults in the
+table below are what you actually get when a line is left empty. In production
+(`NODE_ENV=production`) the two Required variables must be set or the gateway refuses
+to start.
+
+### Required
+
+| Variable           | Default                | Purpose                                                                                                                                                                                  |
+| ------------------ | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MCPGW_MASTER_KEY` | required in production | 32 random bytes as 64 hex chars (`openssl rand -hex 32`); in dev an ephemeral key is generated with a loud warning; rotating it re-seals stored secrets (see `MCPGW_MASTER_KEY_VERSION`) |
+| `MCPGW_PUBLIC_URL` | required in production | the public origin used for Origin checks and client snippets; unset in dev assumes `http://localhost:<port>`                                                                             |
+
+### Bootstrap admin (first migration)
+
+| Variable                   | Default | Purpose                                                                                                                                                      |
+| -------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `MCPGW_ADMIN_EMAIL`        | unset   | the first-run admin, bootstrapped at the first migration when both admin variables are set; remove them once a real account exists                           |
+| `MCPGW_ADMIN_PASSWORD`     | unset   | the first-run admin password; shorter than 12 characters is logged and the account is not created, which leaves the gateway running but with no admin behind |
+| `MCPGW_MASTER_KEY_VERSION` | `1`     | bump after rotating `MCPGW_MASTER_KEY` to force re-sealing of the stored secrets                                                                             |
+
+### Optional
+
+| Variable              | Default | Purpose                                                                                                       |
+| --------------------- | ------- | ------------------------------------------------------------------------------------------------------------- |
+| `MCPGW_METRICS_TOKEN` | unset   | bearer token for `/metrics` (min 16 chars); unset means `/metrics` returns `404` and the endpoint is disabled |
+| `MCPGW_COOKIE_SECRET` | unset   | session cookie signing key (min 32 chars); unset derives one from the master key                              |
+
+### Server
+
+| Variable                           | Default   | Purpose                                                                                                                                                                                                                      |
+| ---------------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MCPGW_HOST`                       | `0.0.0.0` | bind address of the gateway's HTTP listener                                                                                                                                                                                  |
+| `MCPGW_PORT`                       | `8080`    | listen port; keep the default in the image unless the container healthcheck is overridden too (the in-image HEALTHCHECK hardcodes `http://127.0.0.1:8080/healthz`)                                                           |
+| `MCPGW_DATA_DIR`                   | `./data`  | where the SQLite database, snapshots and the stdio workdir live                                                                                                                                                              |
+| `MCPGW_LOG_LEVEL`                  | `info`    | one of `fatal`, `error`, `warn`, `info`, `debug`, `trace`, `silent`                                                                                                                                                          |
+| `MCPGW_TRUST_PROXY`                | `true`    | trust one `X-Forwarded-For` hop (Caddy) for rate limits and the audit trail; set `false` on a bare, unproxied run, since the header is client-spoofable                                                                      |
+| `MCPGW_ALLOW_PRIVATE_NETWORK`      | `false`   | let remote upstreams target RFC1918/CGNAT hosts (fully private installs only), and register `http://` upstreams pointing at private IP literals when `true`; link-local and cloud-metadata addresses stay blocked either way |
+| `MCPGW_ALLOW_HTTP`                 | `false`   | an `http://` public origin on a private or loopback host (`http://<vm-ip>:<port>`) is allowed automatically; the flag also admits plain http for PUBLIC hosts, where bearer keys travel unencrypted                          |
+| `MCPGW_ALLOW_INSECURE_TLS`         | `false`   | skip upstream certificate verification for self-signed certs (use with care)                                                                                                                                                 |
+| `MCPGW_UPSTREAM_CONNECT_TIMEOUT_S` | `10`      | seconds allowed to open one upstream connection                                                                                                                                                                              |
+| `MCPGW_SHUTDOWN_TIMEOUT_S`         | `30`      | seconds a graceful shutdown waits before exiting                                                                                                                                                                             |
+| `MCPGW_MAX_BODY_BYTES`             | `1048576` | largest `/mcp` request body accepted, in bytes; bigger bodies answer with `413`                                                                                                                                              |
+
+### Gateway behaviour
+
+| Variable                         | Default   | Purpose                                                                                                                                          |
+| -------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `MCPGW_HEALTH_INTERVAL_S`        | `30`      | seconds between the worker's health sweeps of the live upstreams                                                                                 |
+| `MCPGW_WORKER_WAIT_S`            | `60`      | how long `bun run worker` waits for the gateway to create the schema before it gives up, instead of sweeping a database that is not migrated yet |
+| `MCPGW_CATALOG_TTL_S`            | `60`      | seconds the aggregated tool catalog stays cached                                                                                                 |
+| `MCPGW_SESSION_TTL_MIN`          | `30`      | minutes an idle MCP session is kept before the GC collects it                                                                                    |
+| `MCPGW_MAX_LIVE_UPSTREAMS`       | `20`      | hard cap on simultaneous live upstream connections in the pool                                                                                   |
+| `MCPGW_UPSTREAM_TIMEOUT_MS`      | `60000`   | default per-upstream call timeout in ms (what a new upstream row gets)                                                                           |
+| `MCPGW_UPSTREAM_MAX_TIMEOUT_MS`  | `300000`  | ceiling any per-upstream timeout can be raised to, in ms                                                                                         |
+| `MCPGW_TOOL_PAYLOAD_LIMIT_BYTES` | `1048576` | largest tool payload accepted, in bytes                                                                                                          |
+
+### Debug & retention
+
+| Variable                          | Default | Purpose                                                                                                           |
+| --------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------- |
+| `MCPGW_DEBUG`                     | `false` | store (redacted) tool request/response payloads for post-mortems                                                  |
+| `MCPGW_DEBUG_MAX_BYTES`           | `16384` | most bytes stored per debug payload, in bytes                                                                     |
+| `MCPGW_RETENTION_TOOL_CALLS_DAYS` | `30`    | days tool-call logs are kept                                                                                      |
+| `MCPGW_RETENTION_AUDIT_DAYS`      | `180`   | days the audit trail is kept                                                                                      |
+| `MCPGW_RETENTION_HEALTH_DAYS`     | `7`     | days upstream health history is kept                                                                              |
+| `MCPGW_RETENTION_BACKUPS`         | `14`    | most database backups the daily snapshot keeps                                                                    |
+| `MCPGW_TZ`                        | `UTC`   | the timezone recorded in the config for this host's process; stored timestamps are always UTC ISO-8601 regardless |
+
+Three variables live outside this table on purpose:
+
+- `MCPGW_ENV_KEY` is a test-only hook: it switches which memoised configuration
+  `getConfig()` hands back, so tests can isolate a config without touching `.env`.
+  It appears in neither `.env.example` nor the schema above.
+- `NODE_ENV` is not MCPGW-prefixed but gates the same modes: `production` makes the
+  two Required variables mandatory and, without `MCPGW_ALLOW_HTTP`, refuses plain
+  http to public origins at boot; anything else runs lenient (dev).
+- `MCPGW_IMAGE` is a deploy-only override for compose, used to point the stack at a
+  local build (see `deploy/.env.example` and "Build the image locally (optional)"
+  above); it never reaches the gateway process itself.
+
+As before, `.env.example` remains the machine-readable reference: copy it to `.env`
+and every variable there is documented inline.
+
 ## Deploy (VPS)
 
 ### Pull-first quickstart

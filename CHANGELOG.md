@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `http://` upstreams to private IP literals are now registerable when
+  `MCPGW_ALLOW_PRIVATE_NETWORK=true`, so the dashboard form and the SSRF request
+  guard stay consistent (link-local and cloud-metadata addresses stay refused
+  either way).
+
 ## [0.1.3] - 2026-09-29
 
 ### Fixed
