@@ -67,7 +67,7 @@ area matters, as in `test(backup):`.
 
 Fill in [`.github/PULL_REQUEST_TEMPLATE.md`](./.github/PULL_REQUEST_TEMPLATE.md): what
 changed, why, and how you verified it, including any command you ran and what it printed.
-Expect the CI workflow on the PR with its two jobs, `verify` and `smoke`, both green
+Expect the CI workflow on the PR with its checks for `verify`, `smoke`, and an image build, all green
 before review. If `smoke` fails on a PR that didn't touch the gateway, read its log from
 the top anyway; a credential or environment mismatch between the bootstrap and the smoke
 steps shows up as a failure that points at the wrong thing, and the comments in the
