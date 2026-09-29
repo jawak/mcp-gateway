@@ -90,15 +90,6 @@ export const actions = {
 
 		const parsed = parseEnvLines(values.env ?? '');
 		if (parsed.errors.length > 0) fieldErrors.env = parsed.errors[0] as string;
-		let envRefs: Record<string, string> = {};
-		if (!fieldErrors.env) {
-			try {
-				envRefs = rowsToRefs(parsed.rows);
-			} catch (error) {
-				if (error instanceof RegistryError) fieldErrors.env = error.message;
-				else throw error;
-			}
-		}
 
 		const secretName = (values.secretName ?? '').trim();
 		const secretValue = values.secretValue ?? '';
@@ -108,7 +99,21 @@ export const actions = {
 
 		if (Object.keys(fieldErrors).length > 0) return fail(400, { values, fieldErrors });
 
+		// the inline secret is sealed BEFORE the env references are validated below,
+		// so the vault check sees the "New secret" typed next to the env line that
+		// references it — otherwise the form would refuse the very submission that
+		// creates it with "does not exist — create it first"
 		if (secretName && secretValue) putSecret(secretName, secretValue, actor);
+
+		let envRefs: Record<string, string>;
+		try {
+			envRefs = rowsToRefs(parsed.rows);
+		} catch (error) {
+			if (error instanceof RegistryError) {
+				fieldErrors.env = error.message;
+				return fail(400, { values, fieldErrors });
+			} else throw error;
+		}
 
 		try {
 			const created = createUpstream(
