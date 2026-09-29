@@ -10,6 +10,8 @@
  * Usage: bun run scripts/smoke.ts --base-url http://localhost:8080
  * Env:   MCPGW_SMOKE_EMAIL / MCPGW_SMOKE_PASSWORD (bootstrap admin)
  *        MCPGW_METRICS_TOKEN (if the instance exposes /metrics)
+ *        MCPGW_SMOKE_COMMAND / MCPGW_SMOKE_FIXTURE (override the stdio upstream's
+ *        command and fixture — the container run points both inside the image)
  */
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -32,7 +34,9 @@ const base = arg('base-url', 'http://localhost:8080').replace(/\/$/, '');
 const email = process.env.MCPGW_SMOKE_EMAIL ?? arg('smoke-email', 'admin@example.com');
 const password = process.env.MCPGW_SMOKE_PASSWORD ?? arg('smoke-password', 'bootstrap-pass-123');
 const metricsToken = process.env.MCPGW_METRICS_TOKEN ?? '';
-const fixture = resolve(import.meta.dirname, '../tests/fixtures/echo-mcp-server.ts');
+const fixture =
+	process.env.MCPGW_SMOKE_FIXTURE ??
+	resolve(import.meta.dirname, '../tests/fixtures/echo-mcp-server.ts');
 const slug = `smoke-${Math.random().toString(36).slice(2, 8)}`;
 
 let failures = 0;
@@ -136,7 +140,7 @@ async function main(): Promise<void> {
 			slug,
 			name: 'Smoke upstream',
 			transport: 'stdio',
-			command: process.execPath,
+			command: process.env.MCPGW_SMOKE_COMMAND ?? process.execPath,
 			args: fixture,
 			pin: 'pinned',
 			timeoutMs: '30000',

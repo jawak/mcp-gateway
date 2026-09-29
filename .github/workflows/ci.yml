@@ -81,4 +81,58 @@ jobs:
         with:
           file: deploy/Dockerfile
           push: false
+          # load: true puts the built image in this job's docker daemon so the steps
+          # below can run it; a future setup-buildx-action would swap the default
+          # docker driver to a container one and silently break the `docker run` below
+          load: true
           tags: mcp-gateway:ci
+      # node_modules for the smoke script only (it imports the MCP SDK from the
+      # runner host); the image build installs its own dependencies inside Docker
+      - run: bun install --frozen-lockfile
+      # the run that closes the class of bug that shipped in v0.1.0/v0.1.1: the smoke
+      # job above boots the built app on the runner host, where drizzle/ exists in the
+      # repo checkout — so a published image could lack the migrations folder entirely
+      # and nothing noticed until a fresh `docker run` died. Booting the image itself
+      # and smoking it here makes a broken image fail CI instead of a broken release.
+      - name: Boot the image
+        run: |
+          # the master key is the octal trap the host smoke job comments on: 64 zeros
+          # as an unquoted env value parse as octal and the gateway receives the
+          # string "0", so the value stays quoted here and the container gets all
+          # 64 hex characters the config validator expects
+          docker run -d --name mcp-gateway-smoke -p 8080:8080 \
+            -v ${{ github.workspace }}/tests/fixtures:/tmp/fixtures:ro \
+            -e MCPGW_MASTER_KEY='0000000000000000000000000000000000000000000000000000000000000000' \
+            -e MCPGW_PUBLIC_URL=http://localhost:8080 \
+            -e MCPGW_ADMIN_EMAIL=admin@example.com \
+            -e MCPGW_ADMIN_PASSWORD=ci-bootstrap-password \
+            -e MCPGW_METRICS_TOKEN=ci-metrics-token-0123456789 \
+            mcp-gateway:ci
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8080/healthz >/dev/null && break
+            sleep 1
+          done
+          if ! curl -fsS http://localhost:8080/healthz > /dev/null; then
+            # the loop cannot fail the step (curl's failure is not the last command in
+            # the && list), so a container that never came up would pass below
+            echo "::error::the container image did not come up within 30s"
+            docker logs mcp-gateway-smoke
+            exit 1
+          fi
+      - name: Smoke the packaged image
+        env:
+          # must match the bootstrap above, or login fails with a 401 that looks like
+          # an authentication fault; MCPGW_SMOKE_COMMAND/MCPGW_SMOKE_FIXTURE point the
+          # stdio upstream spawn inside the container — `bun` ships in the image and
+          # the fixture is the file inside the whole tests/fixtures directory mounted
+          # into it above: a single-file mount would leave the fixture's sibling
+          # ./register-tools.js unresolvable and the stdio spawn would die
+          MCPGW_SMOKE_EMAIL: admin@example.com
+          MCPGW_SMOKE_PASSWORD: ci-bootstrap-password
+          MCPGW_METRICS_TOKEN: ci-metrics-token-0123456789
+          MCPGW_SMOKE_COMMAND: bun
+          MCPGW_SMOKE_FIXTURE: /tmp/fixtures/echo-mcp-server.ts
+        run: bun run scripts/smoke.ts --base-url http://localhost:8080
+      - name: Stop the smoke container
+        if: always()
+        run: docker rm -f mcp-gateway-smoke || true
