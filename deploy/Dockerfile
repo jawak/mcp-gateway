@@ -69,6 +69,9 @@ RUN bun install --frozen-lockfile && bun pm cache rm
 # build output: Bun bundle + SvelteKit SSR bundle + client assets
 COPY --from=build --chown=mcpgw:mcpgw /app/build ./build
 COPY --from=build --chown=mcpgw:mcpgw /app/.svelte-kit/output ./.svelte-kit/output
+# SQL migrations: the web process migrates once at boot and the worker refuses to
+#   start until the schema exists — neither boots without this folder in the image.
+COPY --from=build --chown=mcpgw:mcpgw /app/drizzle ./drizzle
 
 USER mcpgw
 EXPOSE 8080

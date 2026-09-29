@@ -202,6 +202,11 @@ async function createApp(): Promise<() => Promise<void>> {
 }
 
 await createApp().catch((error: unknown) => {
-	logger.fatal({ error }, 'gateway failed to start');
+	// `err` (not `error`) gets pino's built-in error serializer: a nested Error
+	// under any other key serializes to `{}` and hides the cause entirely.
+	logger.fatal(
+		{ err: error },
+		'gateway failed to start: ' + (error instanceof Error ? error.message : String(error))
+	);
 	process.exit(1);
 });
