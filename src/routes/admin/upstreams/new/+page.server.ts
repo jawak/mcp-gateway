@@ -6,6 +6,8 @@ import {
 	assertValidSlug,
 	setUpstreamEnabled
 } from '$lib/server/registry';
+import { getConfig } from '$lib/server/config';
+import { classifyAddress } from '$lib/server/security/ssrf';
 import {
 	normaliseRef,
 	parseArgsLine,
@@ -69,7 +71,8 @@ export const actions = {
 		} else {
 			const url = (values.url ?? '').trim();
 			if (!isHttpUrl(url))
-				fieldErrors.url = 'Enter an https:// URL (http:// is only allowed for localhost).';
+				fieldErrors.url =
+					'Enter an https:// URL (http:// is only allowed for localhost, or private IP addresses when MCPGW_ALLOW_PRIVATE_NETWORK=true).';
 			const style = values.authStyle ?? 'none';
 			const http: HttpConnection = {
 				url,
@@ -206,12 +209,21 @@ async function finish(
 	throw redirect(303, `/admin/upstreams/${slug}?created=1&healthy=1`);
 }
 
+/**
+ * Mirror of the SSRF guard's http policy: https always, http only for
+ * (localhost | 127.0.0.1), or private-range IP literals when the deployment runs
+ * with MCPGW_ALLOW_PRIVATE_NETWORK=true. hostname-based http upstreams stay
+ * refused (DNS-unknown at the refusal point — see the ssrf guard).
+ */
 function isHttpUrl(value: string): boolean {
 	try {
 		const url = new URL(value);
 		if (url.protocol === 'https:') return true;
 		return (
-			url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1')
+			url.protocol === 'http:' &&
+			(url.hostname === 'localhost' ||
+				url.hostname === '127.0.0.1' ||
+				(getConfig().allowPrivateNetwork && classifyAddress(url.hostname) === 'private'))
 		);
 	} catch {
 		return false;

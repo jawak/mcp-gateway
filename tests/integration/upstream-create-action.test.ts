@@ -156,3 +156,113 @@ describe('the create action: inline "New secret" ordering', () => {
 		expect(getUpstreamBySlug('argo-plnm2')).toBeUndefined();
 	});
 });
+
+/**
+ * http:// to a private IP literal, exercised at the action itself.
+ *
+ * With MCPGW_ALLOW_PRIVATE_NETWORK=true, an http upstream pointing at a
+ * private-range address registers like any other — the form's url check mirrors
+ * the SSRF guard. Before the mirror landed, the form banned non-localhost
+ * http:// outright (ActionFailure/400 + fieldErrors.url): the RED run pinned
+ * exactly that ORDER observable, and then must fail, until the form mirrors the
+ * guard.
+ */
+const PRIVATE_HTTP_FORM = {
+	slug: 'mcp-priv',
+	name: 'Private MCP',
+	transport: 'http',
+	url: 'http://10.99.0.102:3300/api/mcp',
+	timeoutMs: '1000',
+	env: ''
+};
+
+describe('the create action: http:// to a private IP literal with MCPGW_ALLOW_PRIVATE_NETWORK=true', () => {
+	beforeAll(() => {
+		process.env.MCPGW_ALLOW_PRIVATE_NETWORK = 'true';
+		// the memoised config cache key tracks ONLY MCPGW_ENV_KEY (config.ts:374) —
+		// setting the env var alone does NOT bust the cache
+		resetConfigCache();
+	});
+
+	afterAll(() => {
+		// restore, or test files sharing this bun process inherit the flag
+		delete process.env.MCPGW_ALLOW_PRIVATE_NETWORK;
+		resetConfigCache();
+	});
+
+	test('a private-range http upstream registers (303 + the row; the probe failed, healthy=0)', async () => {
+		let result: unknown;
+		let thrown: unknown;
+		try {
+			result = await callCreate(PRIVATE_HTTP_FORM);
+		} catch (error) {
+			// redirect() THROWS a Redirect (the action rethrows it): not an Error and
+			// not an ActionFailure
+			thrown = error;
+		}
+
+		if (!thrown) {
+			// Only reachable while the form still bans non-localhost http:// (the
+			// pre-mirror state): the action answered with an ActionFailure instead of
+			// redirecting. Assert the ORDER facts, then fail so the run stays red
+			// until the form's isHttpUrl mirrors the SSRF guard.
+			const failure = result as { status: number; data: { fieldErrors?: Record<string, string> } };
+			expect(failure.status).toBe(400);
+			expect(failure.data.fieldErrors?.url).toContain('https://');
+			expect(getUpstreamBySlug('mcp-priv')).toBeUndefined();
+			throw new Error(
+				`the form refused an http upstream to a private IP literal despite MCPGW_ALLOW_PRIVATE_NETWORK=true: ActionFailure/${failure.status} + "${failure.data.fieldErrors?.url}" + upstream-row=${getUpstreamBySlug('mcp-priv') === undefined ? 'absent' : 'present'}`
+			);
+		}
+
+		expect(isRedirect(thrown)).toBe(true);
+		const redirect = thrown as { status: number; location: string };
+		expect(redirect.status).toBe(303);
+		// the probe outcome is environment-dependent — on a managed private network
+		// the private address actually serves the upstream (healthy=1, observed at
+		// 760ms); where it is unreachable the record lands disabled (healthy=0,
+		// pinned below). Only the created anchor is pinned for this URL.
+		expect(redirect.location).toContain('created=1');
+
+		// the row exists and stores the private http URL
+		const row = getUpstreamBySlug('mcp-priv');
+		expect(row).toBeDefined();
+		expect(row?.transport).toBe('http');
+		expect(row?.connection).toEqual({
+			url: 'http://10.99.0.102:3300/api/mcp',
+			authStyle: 'none'
+		});
+	});
+
+	test('an UNREACHABLE private http upstream still registers, landing disabled with healthy=0', async () => {
+		// TEST-NET-3 (RFC 5737) classifies 'private' for the guard and is guaranteed
+		// never routable, so the probe deterministically fails in ~1s
+		// (timeoutMs caps the handshake wrap) — unlike the live 10.99.0.102 above
+		let thrown: unknown;
+		try {
+			await callCreate({
+				...PRIVATE_HTTP_FORM,
+				slug: 'mcp-priv-dead',
+				name: 'Dead private MCP',
+				url: 'http://203.0.113.5:3300/api/mcp'
+			});
+		} catch (error) {
+			// redirect() THROWS a Redirect (the action rethrows it): not an Error and
+			// not an ActionFailure
+			thrown = error;
+		}
+
+		expect(isRedirect(thrown)).toBe(true);
+		const redirect = thrown as { status: number; location: string };
+		expect(redirect.status).toBe(303);
+		// the probe failed, so the record is stored DISABLED with the error shown
+		expect(redirect.location).toContain('healthy=0');
+		const row = getUpstreamBySlug('mcp-priv-dead');
+		expect(row).toBeDefined();
+		expect(row?.enabled).toBe(false);
+		expect(row?.connection).toEqual({
+			url: 'http://203.0.113.5:3300/api/mcp',
+			authStyle: 'none'
+		});
+	});
+});

@@ -138,6 +138,97 @@ describe('assertUrlAllowed', () => {
 	});
 });
 
+/**
+ * http:// to a private IP literal behind MCPGW_ALLOW_PRIVATE_NETWORK: the
+ * exemption pinned at the ssrf.ts:127 fix point — every refused side stays
+ * refused. Injected `resolve` only — no live DNS.
+ */
+describe('assertUrlAllowed: http:// to private IP literals behind MCPGW_ALLOW_PRIVATE_NETWORK', () => {
+	test('the flag allows http:// to a private-range IP literal (the ssrf.ts:127 exemption)', async () => {
+		const { url, addresses } = await assertUrlAllowed('http://10.99.0.102:3300/api/mcp', {
+			allowPrivateNetwork: true,
+			resolve: resolve('10.99.0.102')
+		});
+		expect(url.hostname).toBe('10.99.0.102');
+		expect(addresses).toEqual(['10.99.0.102']);
+	});
+
+	test('https + private stays allowed unchanged (the address path already honours the flag)', async () => {
+		await expect(
+			assertUrlAllowed('https://10.99.0.102:3300/api/mcp', {
+				allowPrivateNetwork: true,
+				resolve: resolve('10.99.0.102')
+			})
+		).resolves.toBeTruthy();
+	});
+
+	test('http:// to a public host is still refused', async () => {
+		await expect(
+			assertUrlAllowed('http://example.com', { resolve: resolve('93.184.216.34') })
+		).rejects.toThrow(/http:\/\/ is refused/);
+	});
+
+	test('http:// loopback stays allowed unchanged (localhost / 127.0.0.1 / ::1)', async () => {
+		await expect(
+			assertUrlAllowed('http://localhost:3300/mcp', {
+				allowPrivateNetwork: true,
+				resolve: resolve('127.0.0.1')
+			})
+		).resolves.toBeTruthy();
+		await expect(
+			assertUrlAllowed('http://127.0.0.1:3300/mcp', { allowPrivateNetwork: true })
+		).resolves.toBeTruthy();
+		await expect(
+			assertUrlAllowed('http://[::1]:3300/mcp', { allowPrivateNetwork: true })
+		).resolves.toBeTruthy();
+	});
+
+	test('link-local is ALWAYS refused, even with the flag (cloud metadata)', async () => {
+		await expect(
+			assertUrlAllowed('http://169.254.169.254/latest/meta-data/', {
+				allowPrivateNetwork: true,
+				resolve: resolve('169.254.169.254')
+			})
+		).rejects.toThrow(/http:\/\/ is refused/);
+		await expect(
+			assertUrlAllowed('https://metadata.internal./', {
+				allowPrivateNetwork: true,
+				resolve: resolve('169.254.169.254')
+			})
+		).rejects.toThrow(/link-local/);
+	});
+
+	test('multicast stays refused', async () => {
+		await expect(
+			assertUrlAllowed('http://224.0.0.5/mcp', {
+				allowPrivateNetwork: true,
+				resolve: resolve('224.0.0.5')
+			})
+		).rejects.toThrow(/http:\/\/ is refused/);
+	});
+
+	test('http:// to a private HOSTNAME is still refused (DNS-unknown at the refusal point)', async () => {
+		await expect(
+			assertUrlAllowed('http://db.internal.example/mcp', {
+				allowPrivateNetwork: true,
+				resolve: resolve('10.20.30.40')
+			})
+		).rejects.toThrow(/http:\/\/ is refused/);
+	});
+
+	test('WITHOUT the flag the private literal is still refused (the allowPrivate conjunct)', async () => {
+		await expect(
+			assertUrlAllowed('http://10.99.0.102:3300/api/mcp', { resolve: resolve('10.99.0.102') })
+		).rejects.toThrow(/http:\/\/ is refused/);
+	});
+
+	test('the refusal message names the flag (the amendment; the http:// is refused prefix kept)', async () => {
+		await expect(
+			assertUrlAllowed('http://10.99.0.102:3300/api/mcp', { resolve: resolve('10.99.0.102') })
+		).rejects.toThrow(/MCPGW_ALLOW_PRIVATE_NETWORK=true/);
+	});
+});
+
 describe('createSsrfSafeFetch', () => {
 	test('never follows a redirect into the private network', async () => {
 		const local = Bun.serve({

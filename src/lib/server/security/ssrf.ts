@@ -126,11 +126,12 @@ export async function assertUrlAllowed(
 
 	if (
 		url.protocol === 'http:' &&
-		!(isLocalName || (literal && classifyAddress(host) === 'loopback'))
+		!(isLocalName || (literal && classifyAddress(host) === 'loopback')) &&
+		!(literal && allowPrivate && classifyAddress(host) === 'private')
 	) {
 		throw new SsrfError(
 			rawUrl,
-			'http:// is refused; use https:// (loopback is exempt for local development)'
+			'http:// is refused; use https:// (loopback is exempt for local development, or private IP literals when MCPGW_ALLOW_PRIVATE_NETWORK=true)'
 		);
 	}
 
