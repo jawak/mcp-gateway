@@ -1,6 +1,12 @@
 # mcp-gateway
 
+[![CI](https://github.com/jawak/mcp-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/jawak/mcp-gateway/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+[![Bun](https://img.shields.io/badge/bun-%3E%3D1.2-f472b6.svg)](https://bun.sh)
+
 One MCP endpoint for many MCP servers. Point your AI client (Claude Code, Claude Desktop, Cursor, opencode, Windsurf) at a single URL + API key and get every upstream MCP tool the gateway admin has configured — stdio servers are spawned on the server, so nothing is installed and no credential ever lives on your laptop.
+
+<!-- Screenshot: drop a dashboard capture at docs/screenshot.png and uncomment: ![dashboard](docs/screenshot.png) -->
 
 Measured behaviour and the defects found getting here: [`docs/nfr-report.md`](./docs/nfr-report.md). Design notes and the working task list live in `.agents/`, which is local-only and not published with the repo.
 
@@ -90,18 +96,18 @@ otherwise `/metrics` correctly answers `401` and those checks are skipped, not f
 
 ```sh
 cd deploy && cp .env.example .env
-docker build -f Dockerfile -t mcp-gateway:dev ..    # until a published image exists
-MCPGW_IMAGE=mcp-gateway:dev docker compose up -d
+docker build -f Dockerfile -t ghcr.io/jawak/mcp-gateway:0.1 ..   # optional: build locally if you are ahead of the latest release
+docker compose up -d    # runs ghcr.io/jawak/mcp-gateway:0.1 (pulled, or the local build above)
 ```
 
 Three services: Caddy (TLS, SSE-safe proxying), the gateway, and a separate worker so
 maintenance never delays a request. `/data` holds the SQLite database and snapshots —
 back that volume up.
 
-`deploy/docker-compose.yml` defaults `MCPGW_IMAGE` to `ghcr.io/your-org/mcp-gateway`,
-which only exists once the release workflow has run against a repository with a
-remote and a published package. Building locally avoids pulling an image that is not
-there. Edit the Caddyfile's `mcp.example.com` to your hostname first.
+`deploy/docker-compose.yml` defaults `MCPGW_IMAGE` to `ghcr.io/jawak/mcp-gateway:0.1`,
+which the release workflow tags per release. The optional build above tags your local
+build with the same name, so compose runs it instead of pulling whenever you are ahead
+of the latest release. Edit the Caddyfile's `mcp.example.com` to your hostname first.
 
 ## Client setup
 
@@ -196,6 +202,13 @@ scripts/                migrate, backup, smoke, loadtest
 deploy/                 Dockerfile, compose, Caddyfile
 docs/                   NFR report
 ```
+
+## Community
+
+- [CONTRIBUTING.md](./CONTRIBUTING.md): how to open the dev env, the CI gate, commit + PR style
+- [SECURITY.md](./SECURITY.md): private vulnerability reporting
+- [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
+- [CHANGELOG.md](./CHANGELOG.md): per-release changes
 
 ## Notes for contributors
 
