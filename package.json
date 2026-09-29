@@ -1,8 +1,23 @@
 {
 	"name": "mcp-gateway",
 	"private": true,
-	"version": "0.0.1",
+	"version": "0.1.0",
 	"type": "module",
+	"license": "Apache-2.0",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/jawak/mcp-gateway.git"
+	},
+	"bugs": {
+		"url": "https://github.com/jawak/mcp-gateway/issues"
+	},
+	"homepage": "https://github.com/jawak/mcp-gateway#readme",
+	"author": {
+		"name": "jawak"
+	},
+	"engines": {
+		"bun": ">=1.2"
+	},
 	"scripts": {
 		"dev": "bunx --bun vite dev",
 		"build": "bun run build:app && bun run build:server",
