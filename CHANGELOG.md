@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- _pending:_ the CI container-smoke change (a `.github/workflows/ci.yml` edit) is waiting on a push granted OAuth `workflow` scope.
+## [0.1.3] - 2026-09-29
+
+### Fixed
+
+- the upstream-creation form now seals its inline "New secret" field BEFORE validating env references — a form whose env line references the secret typed in the same form now works in one submission.
+- the image also carries the container-smoke CI change already pushed after 0.1.2 (the image job boots the container and smokes the packaged image).
 
 ## [0.1.2] - 2026-09-29
 
