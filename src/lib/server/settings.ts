@@ -136,6 +136,11 @@ export function immutableSettings(): Array<{ label: string; value: string; hint:
 			hint: 'MCPGW_ALLOW_PRIVATE_NETWORK — SSRF policy'
 		},
 		{
+			label: 'Allow HTTP public URL',
+			value: config.allowHttp ? 'allowed' : 'refused for public hosts',
+			hint: 'MCPGW_ALLOW_HTTP — public URL transport policy'
+		},
+		{
 			label: 'Trusted proxy',
 			value: config.trustProxy ? 'one hop (X-Forwarded-For)' : 'direct',
 			hint: 'MCPGW_TRUST_PROXY'

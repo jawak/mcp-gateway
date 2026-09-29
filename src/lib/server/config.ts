@@ -14,6 +14,7 @@
  * Full variable reference lives in `.env.example`.
  */
 import { hkdfSync } from 'node:crypto';
+import { isIP } from 'node:net';
 import { z } from 'zod';
 // Inlined by the bundler, so the built server knows its own version without
 // depending on how it was launched (bun build/server.js has no npm_* env).
@@ -44,6 +45,8 @@ export type Config = {
 	allowPrivateNetwork: boolean;
 	/** Skip upstream certificate verification. */
 	allowInsecureTls: boolean;
+	/** Allow a plain-http public URL for hosts the private-host check would refuse. */
+	allowHttp: boolean;
 	upstreamConnectTimeoutMs: number;
 	/** How long the worker waits for the gateway to migrate before giving up. */
 	workerWaitMs: number;
@@ -118,6 +121,7 @@ const envSchema = z.object({
 	MCPGW_TRUST_PROXY: truthyDefault(true),
 	MCPGW_ALLOW_PRIVATE_NETWORK: truthyDefault(false),
 	MCPGW_ALLOW_INSECURE_TLS: truthyDefault(false),
+	MCPGW_ALLOW_HTTP: truthyDefault(false),
 	MCPGW_UPSTREAM_CONNECT_TIMEOUT_S: positiveSeconds.default(10),
 	MCPGW_WORKER_WAIT_S: positiveSeconds.default(60),
 	MCPGW_SHUTDOWN_TIMEOUT_S: positiveSeconds.default(30),
@@ -151,6 +155,60 @@ function isHttpUrl(value: string): boolean {
 
 function isEmail(value: string): boolean {
 	return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value);
+}
+
+/**
+ * Whether a plain-http public URL may be served to this hostname in production:
+ * `localhost`, or an IP literal (brackets stripped here — Bun keeps them in
+ * `url.hostname`) in the loopback, RFC1918/CGNAT, link-local or ULA ranges,
+ * mirroring the SSRF guard's `classifyAddress`, or an IPv4-mapped IPv6 address
+ * decoded back to its v4 identity. Multicast and public hosts are not private,
+ * so plain http to them stays behind the `MCPGW_ALLOW_HTTP` opt-in.
+ */
+function isPrivateHost(hostname: string): boolean {
+	const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+	if (host === 'localhost' || host === 'localhost.localdomain') return true;
+	const version = isIP(host);
+	if (version === 4) {
+		const octets = host.split('.').map((part) => Number.parseInt(part, 10));
+		const [a = 0, b = 0] = octets;
+		if (a === 127) return true; // loopback 127/8
+		if (a === 169 && b === 254) return true; // link-local
+		if (a === 10) return true; // 10/8
+		if (a === 172 && b >= 16 && b <= 31) return true; // 172.16/12
+		if (a === 192 && b === 168) return true; // 192.168/16
+		if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT 100.64/10
+		if (a === 0) return true; // 0.0.0.0/8 "this network"
+		if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking
+		if (a === 192 && b === 0) return true; // IETF protocol assignments
+		if (a === 198 && b === 51) return true; // TEST-NET-2
+		if (a === 203 && b === 0) return true; // TEST-NET-3
+		return false;
+	}
+	if (version === 6) {
+		if (host === '::1' || host === '::') return true; // loopback / unspecified
+		if (host.startsWith('::ffff:')) {
+			const tail = host.slice('::ffff:'.length).split(':');
+			if (tail.length === 1 && tail[0].includes('.')) return isPrivateHost(tail[0]);
+			if (tail.length === 2) {
+				const hextets = tail.map((hextet) => Number.parseInt(hextet, 16));
+				if (hextets.some(Number.isNaN)) return false;
+				const octets = [
+					(hextets[0] >> 8) & 0xff,
+					hextets[0] & 0xff,
+					(hextets[1] >> 8) & 0xff,
+					hextets[1] & 0xff
+				];
+				return isPrivateHost(octets.map(String).join('.'));
+			}
+			return false;
+		}
+		const first = Number.parseInt(host.split(':')[0] ?? '0', 16);
+		if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+		if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7 ULA
+		return false;
+	}
+	return false;
 }
 
 /** `1|true|yes|on` (case-insensitive); anything else false, with a configurable default for unset. */
@@ -244,9 +302,14 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
 		warn(`MCPGW_PUBLIC_URL is unset — assuming ${publicUrl.origin} (dev only).`);
 	}
 
-	if (publicUrl.protocol === 'http:' && isProduction) {
+	if (
+		publicUrl.protocol === 'http:' &&
+		isProduction &&
+		!isPrivateHost(publicUrl.hostname) &&
+		!e.MCPGW_ALLOW_HTTP
+	) {
 		throw new ConfigError([
-			`MCPGW_PUBLIC_URL: ${publicUrl.origin} uses http:// — TLS is required in production`
+			`MCPGW_PUBLIC_URL: ${publicUrl.origin} uses http:// for a host that is not private or loopback — TLS is required on public hosts; set MCPGW_ALLOW_HTTP=true if this is intentional`
 		]);
 	}
 
@@ -279,6 +342,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
 		trustProxy: e.MCPGW_TRUST_PROXY,
 		allowPrivateNetwork: e.MCPGW_ALLOW_PRIVATE_NETWORK,
 		allowInsecureTls: e.MCPGW_ALLOW_INSECURE_TLS,
+		allowHttp: e.MCPGW_ALLOW_HTTP,
 		upstreamConnectTimeoutMs: e.MCPGW_UPSTREAM_CONNECT_TIMEOUT_S * 1000,
 		workerWaitMs: e.MCPGW_WORKER_WAIT_S * 1000,
 		gracefulShutdownMs: e.MCPGW_SHUTDOWN_TIMEOUT_S * 1000,

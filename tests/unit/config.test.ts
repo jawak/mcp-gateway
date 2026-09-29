@@ -237,3 +237,92 @@ describe('blank environment values are treated as unset', () => {
 		expect(config.admin.password).toBe('asdf1234');
 	});
 });
+
+describe('loadConfig — plain http public URLs (private/loopback auto-allow + MCPGW_ALLOW_HTTP)', () => {
+	test('allows http:// to RFC1918/CGNAT private hosts in production', () => {
+		for (const url of [
+			'http://192.168.1.10:8080',
+			'http://10.0.0.5:8080',
+			'http://172.16.0.1:8080',
+			'http://100.64.1.1:8080'
+		]) {
+			const cfg = loadConfig({
+				mode: 'strict',
+				env: env({ NODE_ENV: 'production', MCPGW_PUBLIC_URL: url })
+			});
+			expect(cfg.origin).toBe(url);
+		}
+	});
+
+	test('allows http:// to loopback hosts in production', () => {
+		for (const url of ['http://127.0.0.1:8080', 'http://localhost:8080']) {
+			const cfg = loadConfig({
+				mode: 'strict',
+				env: env({ NODE_ENV: 'production', MCPGW_PUBLIC_URL: url })
+			});
+			expect(cfg.origin).toBe(url);
+		}
+	});
+
+	test('allows http:// to IPv6 private and loopback hosts (brackets stripped by the helper)', () => {
+		for (const url of ['http://[::1]:8080', 'http://[fd00::1]:8080']) {
+			const cfg = loadConfig({
+				mode: 'strict',
+				env: env({ NODE_ENV: 'production', MCPGW_PUBLIC_URL: url })
+			});
+			expect(cfg.origin).toBe(url);
+		}
+	});
+
+	test('allows http:// to an IPv4-mapped IPv6 host (canonicalised hex form decoded)', () => {
+		// Bun keeps brackets in url.hostname and canonicalises [::ffff:192.168.1.1]
+		// to the hex form [::ffff:c0a8:101], so the helper must decode the hextets
+		// back to the v4 identity before reclassifying.
+		const input = 'http://[::ffff:192.168.1.1]:8080';
+		const cfg = loadConfig({
+			mode: 'strict',
+			env: env({ NODE_ENV: 'production', MCPGW_PUBLIC_URL: input })
+		});
+		expect(cfg.origin).toBe(new URL(input).origin);
+	});
+
+	test('refuses http:// to public hosts and names MCPGW_ALLOW_HTTP as the escape hatch', () => {
+		for (const url of ['http://8.8.8.8:8080', 'http://mcp.example.com', 'http://172.32.0.1:8080']) {
+			expect(() =>
+				loadConfig({
+					mode: 'strict',
+					env: env({ NODE_ENV: 'production', MCPGW_PUBLIC_URL: url })
+				})
+			).toThrow(/MCPGW_ALLOW_HTTP/);
+		}
+	});
+
+	test('MCPGW_ALLOW_HTTP=true permits a public http:// origin and sets the flag', () => {
+		const cfg = loadConfig({
+			mode: 'strict',
+			env: env({
+				NODE_ENV: 'production',
+				MCPGW_PUBLIC_URL: 'http://203.0.113.5:8080',
+				MCPGW_ALLOW_HTTP: 'true'
+			})
+		});
+		expect(cfg.allowHttp).toBe(true);
+	});
+
+	test('allowHttp defaults to false without MCPGW_ALLOW_HTTP', () => {
+		const cfg = loadConfig({
+			mode: 'strict',
+			env: env({ NODE_ENV: 'production', MCPGW_PUBLIC_URL: 'https://mcp.example.com' })
+		});
+		expect(cfg.allowHttp).toBe(false);
+	});
+
+	test('a bare ip:port without a scheme is still rejected by the schema', () => {
+		expect(() =>
+			loadConfig({
+				mode: 'strict',
+				env: env({ NODE_ENV: 'production', MCPGW_PUBLIC_URL: '192.168.1.10:8080' })
+			})
+		).toThrow(/absolute http\(s\) URL/);
+	});
+});
