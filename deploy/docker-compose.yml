@@ -22,7 +22,7 @@ services:
     depends_on: [gateway]
 
   gateway:
-    image: ${MCPGW_IMAGE:-ghcr.io/your-org/mcp-gateway:latest}
+    image: ${MCPGW_IMAGE:-ghcr.io/jawak/mcp-gateway:0.1}
     restart: unless-stopped
     env_file: .env
     environment:
@@ -46,7 +46,7 @@ services:
       retries: 3
 
   worker:
-    image: ${MCPGW_IMAGE:-ghcr.io/your-org/mcp-gateway:latest}
+    image: ${MCPGW_IMAGE:-ghcr.io/jawak/mcp-gateway:0.1}
     restart: unless-stopped
     command: ['bun', 'run', 'worker']
     env_file: .env
