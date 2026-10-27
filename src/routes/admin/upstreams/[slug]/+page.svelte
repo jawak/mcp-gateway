@@ -14,15 +14,15 @@
 			args?: string[];
 			cwd?: string;
 			url?: string;
+			authMode?: string;
 			authStyle?: string;
 			authName?: string;
 			authRef?: string;
 		}
 	);
-	const status = $derived(
-		data.record.enabled
-			? ((data.record.status as { state?: string } | null)?.state ?? 'unknown')
-			: 'down'
+	const status = $derived(data.effectiveStatus);
+	const oauthAuthorizationRequired = $derived(
+		status === 'unconfigured' && data.authMode === 'oauth'
 	);
 	const checked = $derived(page.url.searchParams.get('checked') === '1');
 	const saved = $derived(page.url.searchParams.get('saved') === '1');
@@ -41,7 +41,11 @@
 		<div>
 			<h1 class="text-lg font-semibold">{data.record.name}</h1>
 			<p class="flex flex-wrap items-center gap-2 text-sm text-zinc-500">
-				<Badge {status} dot />
+				<Badge
+					{status}
+					label={oauthAuthorizationRequired ? 'Authorization required' : undefined}
+					dot
+				/>
 				<span>{data.record.transport === 'stdio' ? 'local process' : 'remote HTTP'}</span>
 				<span>·</span>
 				<span>{data.record.toolsCount ?? 0} tools</span>
@@ -106,54 +110,68 @@
 		</div>
 	{/if}
 
-	<div class="grid gap-4 lg:grid-cols-2">
-		<Card title="Connection">
-			{#if data.record.transport === 'stdio'}
-				<dl class="space-y-1 text-sm">
-					<div class="flex gap-2">
-						<dt class="w-24 text-zinc-500">Command</dt>
-						<dd class="font-mono">{connection.command}</dd>
-					</div>
-					<div class="flex gap-2">
-						<dt class="w-24 shrink-0 text-zinc-500">Arguments</dt>
-						<dd class="font-mono break-all">{(connection.args ?? []).join(' ') || '—'}</dd>
-					</div>
-					{#if connection.cwd}
-						<div class="flex gap-2">
-							<dt class="w-24 text-zinc-500">cwd</dt>
-							<dd class="font-mono break-all">{connection.cwd}</dd>
-						</div>
-					{/if}
-				</dl>
-			{:else}
-				<dl class="space-y-1 text-sm">
-					<div class="flex gap-2">
-						<dt class="w-24 text-zinc-500">URL</dt>
-						<dd class="font-mono break-all">{connection.url}</dd>
-					</div>
-					<div class="flex gap-2">
-						<dt class="w-24 text-zinc-500">Auth</dt>
-						<dd class="font-mono">{connection.authStyle ?? 'none'}</dd>
-					</div>
-					{#if connection.authName}
-						<div class="flex gap-2">
-							<dt class="w-24 text-zinc-500">Header</dt>
-							<dd class="font-mono">{connection.authName}</dd>
-						</div>
-					{/if}
-					{#if connection.authRef}
-						<div class="flex gap-2">
-							<dt class="w-24 text-zinc-500">Credential</dt>
-							<dd class="font-mono break-all">{connection.authRef}</dd>
-						</div>
-					{/if}
-				</dl>
-			{/if}
-			<p class="mt-3 text-xs text-zinc-500">
-				Env references are resolved at spawn time; the gateway's own secrets are never passed to the
-				child process.
+	{#if oauthAuthorizationRequired}
+		<div
+			class="rounded-lg border border-sky-300 bg-sky-50 p-4 text-sm dark:border-sky-900 dark:bg-sky-950/40"
+		>
+			<h2 class="font-semibold text-sky-900 dark:text-sky-200">Authorization required</h2>
+			<p class="mt-1 text-sky-900 dark:text-sky-200">
+				This upstream authenticates with OAuth. Connect it to authorize access; until then the
+				gateway will not contact it.
 			</p>
-		</Card>
+		</div>
+	{/if}
+
+	<div class="grid gap-4 lg:grid-cols-2">
+		<div id="oauth">
+			<Card title="Connection">
+				{#if data.record.transport === 'stdio'}
+					<dl class="space-y-1 text-sm">
+						<div class="flex gap-2">
+							<dt class="w-24 text-zinc-500">Command</dt>
+							<dd class="font-mono">{connection.command}</dd>
+						</div>
+						<div class="flex gap-2">
+							<dt class="w-24 shrink-0 text-zinc-500">Arguments</dt>
+							<dd class="font-mono break-all">{(connection.args ?? []).join(' ') || '—'}</dd>
+						</div>
+						{#if connection.cwd}
+							<div class="flex gap-2">
+								<dt class="w-24 text-zinc-500">cwd</dt>
+								<dd class="font-mono break-all">{connection.cwd}</dd>
+							</div>
+						{/if}
+					</dl>
+				{:else}
+					<dl class="space-y-1 text-sm">
+						<div class="flex gap-2">
+							<dt class="w-24 text-zinc-500">URL</dt>
+							<dd class="font-mono break-all">{connection.url}</dd>
+						</div>
+						<div class="flex gap-2">
+							<dt class="w-24 text-zinc-500">Auth</dt>
+							<dd class="font-mono">{connection.authStyle ?? 'none'}</dd>
+						</div>
+						{#if connection.authName}
+							<div class="flex gap-2">
+								<dt class="w-24 text-zinc-500">Header</dt>
+								<dd class="font-mono">{connection.authName}</dd>
+							</div>
+						{/if}
+						{#if connection.authRef}
+							<div class="flex gap-2">
+								<dt class="w-24 text-zinc-500">Credential</dt>
+								<dd class="font-mono break-all">{connection.authRef}</dd>
+							</div>
+						{/if}
+					</dl>
+				{/if}
+				<p class="mt-3 text-xs text-zinc-500">
+					Env references are resolved at spawn time; the gateway's own secrets are never passed to
+					the child process.
+				</p>
+			</Card>
+		</div>
 
 		<Card title="Handshake" description="Reported by the upstream at its last probe">
 			{#if data.record.status?.server}

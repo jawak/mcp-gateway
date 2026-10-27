@@ -22,6 +22,7 @@ import { FailureTracker, type HealthState } from './restart.ts';
 import type { UpstreamPool } from './pool.ts';
 import type { UpstreamRecord } from './types.ts';
 import { UnconfiguredUpstreamError } from './types.ts';
+import { OAuthAuthorizationRequiredError } from './oauth/provider.ts';
 import { getDb, type Db } from '../db/index.ts';
 import { upstreamHealth, upstreams } from '../db/schema.ts';
 import { uuidv7 } from '../../shared/ids.ts';
@@ -59,6 +60,81 @@ export type SweepResult = {
 	states: Record<string, HealthState>;
 };
 
+export type UpstreamStatusSnapshot =
+	{ state?: string; checkedAt?: string; error?: string } | null | undefined;
+
+export type LatestHealthSnapshot =
+	{ status: string; checkedAt: string; error: string | null } | null | undefined;
+
+export type EffectiveUpstreamStatus = {
+	status: HealthState | 'unknown';
+	error: string | null;
+	checkedAt: string | null;
+	source: 'upstream' | 'health' | 'none';
+};
+
+const OAUTH_AUTHORIZATION_REQUIRED = 'OAuth authorization required — click Connect';
+
+function toHealthState(value: string | null | undefined): HealthState | undefined {
+	return value === 'healthy' || value === 'degraded' || value === 'down' || value === 'unconfigured'
+		? value
+		: undefined;
+}
+
+function checkedAtMs(value: string | null | undefined): number | undefined {
+	if (!value) return undefined;
+	const parsed = Date.parse(value);
+	return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/**
+ * Pick the status a page should show when both the config write and the health
+ * sweep can have recorded one. The newer `checkedAt` wins, so a health-only
+ * `unconfigured` row is not hidden by a stale `upstreams.status` (and vice
+ * versa). A side without a timestamp yields to the side that has one.
+ */
+export function displayStatus(
+	recordStatus: UpstreamStatusSnapshot,
+	latestHealth: LatestHealthSnapshot
+): EffectiveUpstreamStatus {
+	const recordState = toHealthState(recordStatus?.state);
+	const healthState = toHealthState(latestHealth?.status);
+	const recordAt = checkedAtMs(recordStatus?.checkedAt);
+	const healthAt = checkedAtMs(latestHealth?.checkedAt);
+
+	const fromRecord = (): EffectiveUpstreamStatus => ({
+		status: recordState ?? 'unknown',
+		error: recordStatus?.error ?? null,
+		checkedAt: recordStatus?.checkedAt ?? null,
+		source: recordState ? 'upstream' : 'none'
+	});
+	const fromHealth = (): EffectiveUpstreamStatus => ({
+		status: healthState ?? 'unknown',
+		error: latestHealth?.error ?? null,
+		checkedAt: latestHealth?.checkedAt ?? null,
+		source: healthState ? 'health' : 'none'
+	});
+
+	if (recordAt !== undefined && healthAt !== undefined) {
+		return healthAt >= recordAt ? fromHealth() : fromRecord();
+	}
+	if (healthAt !== undefined) return fromHealth();
+	if (recordAt !== undefined) return fromRecord();
+	if (recordState) return fromRecord();
+	if (healthState) return fromHealth();
+	return fromRecord();
+}
+
+function authorizationRequiredOutcome(
+	error: UnconfiguredUpstreamError | OAuthAuthorizationRequiredError
+): ProbeOutcome {
+	return {
+		ok: false,
+		unconfigured: true,
+		error: error instanceof UnconfiguredUpstreamError ? error.missing : OAUTH_AUTHORIZATION_REQUIRED
+	};
+}
+
 /**
  * Default probe: use the pooled connection when there is one (so probing never
  * spawns anything), otherwise a cold connection for pinned upstreams only.
@@ -76,8 +152,11 @@ export function createPoolProbe(pool: UpstreamPool): ProbeFn {
 			await handle.listTools({ timeoutMs: Math.min(timeoutMs, 5_000) });
 			return { ok: true, latencyMs: Date.now() - started };
 		} catch (error) {
-			if (error instanceof UnconfiguredUpstreamError) {
-				return { ok: false, unconfigured: true, error: error.missing };
+			if (
+				error instanceof UnconfiguredUpstreamError ||
+				error instanceof OAuthAuthorizationRequiredError
+			) {
+				return authorizationRequiredOutcome(error);
 			}
 			const message = error instanceof Error ? error.message : String(error);
 			return { ok: false, error: redactString(message) };
@@ -154,7 +233,19 @@ export class HealthMonitor {
 		}
 
 		const timeoutMs = Math.min(record.timeoutMs, this.#defaultProbeMs);
-		const outcome = await this.#probe(record, timeoutMs);
+		let outcome: ProbeOutcome;
+		try {
+			outcome = await this.#probe(record, timeoutMs);
+		} catch (error) {
+			if (
+				error instanceof UnconfiguredUpstreamError ||
+				error instanceof OAuthAuthorizationRequiredError
+			) {
+				outcome = authorizationRequiredOutcome(error);
+			} else {
+				throw error;
+			}
+		}
 
 		if (outcome.unconfigured) {
 			tracker.reset('unconfigured');

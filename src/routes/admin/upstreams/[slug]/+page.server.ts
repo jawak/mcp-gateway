@@ -11,6 +11,8 @@ import { parseArgsLine, parseEnvLines, rowsToRefs } from '$lib/server/registry/e
 
 import { listSecrets, putSecret, secretExists } from '$lib/server/governance/secrets';
 import { testUpstream } from '$lib/server/governance/upstream-test';
+import { displayStatus } from '$lib/server/upstream/health';
+import { resolveAuthMode } from '$lib/server/upstream/types';
 import { getDb } from '$lib/server/db/index';
 import { upstreamHealth } from '$lib/server/db/schema';
 
@@ -29,6 +31,12 @@ export const load = (async ({ params }) => {
 		})
 		.filter((entry): entry is NonNullable<typeof entry> => entry !== null);
 
+	const history = healthHistory(record.id);
+	const latest = history[0]
+		? { status: history[0].status, checkedAt: history[0].checkedAt, error: history[0].error }
+		: undefined;
+	const effective = displayStatus(record.status, latest);
+
 	return {
 		record,
 		scopes,
@@ -38,7 +46,10 @@ export const load = (async ({ params }) => {
 			record.envRefs ?? {},
 			(record.connection as { authRef?: string } | null)?.authRef
 		),
-		history: healthHistory(record.id)
+		authMode: resolveAuthMode(record.connection, record.headersRef),
+		effectiveStatus: record.enabled ? effective.status : 'down',
+		effectiveError: effective.error ?? record.lastError ?? null,
+		history
 	};
 }) satisfies PageServerLoad;
 
@@ -68,7 +79,7 @@ function healthHistory(
 		.select()
 		.from(upstreamHealth)
 		.where(eq(upstreamHealth.upstreamId, upstreamId))
-		.orderBy(desc(upstreamHealth.checkedAt))
+		.orderBy(desc(upstreamHealth.checkedAt), desc(upstreamHealth.id))
 		.limit(20)
 		.all()
 		.map((row) => ({

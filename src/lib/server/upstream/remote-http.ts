@@ -40,7 +40,11 @@ import { redactString } from '../security/redact.ts';
 import { getConfig } from '../config.ts';
 import { logger as rootLogger } from '../observability/logger.ts';
 import { openSecretByName, withTimeout } from './stdio.ts';
-import { createOAuthProvider, type OAuthProvider } from './oauth/provider.ts';
+import {
+	createOAuthProvider,
+	OAuthAuthorizationRequiredError,
+	type OAuthProvider
+} from './oauth/provider.ts';
 import { createOAuthFetch, ensureFreshAccessToken } from './oauth/fetch.ts';
 import { getOAuthConfig } from './oauth/store.ts';
 import { eq } from 'drizzle-orm';
@@ -238,6 +242,11 @@ export async function connectRemoteHttp(options: RemoteHttpOptions): Promise<Ups
 			);
 		} catch (error) {
 			await nextClient.close().catch(() => undefined);
+			if (error instanceof OAuthAuthorizationRequiredError) {
+				lastError = OAUTH_AUTHORIZATION_REQUIRED;
+				options.onStatusChange?.({ kind: 'unconfigured', reason: 'authorization_required' });
+				throw new UnconfiguredUpstreamError(record.slug, OAUTH_AUTHORIZATION_REQUIRED);
+			}
 			const message = redactString(
 				`could not reach ${target.url.origin}${target.url.pathname}: ${(error as Error).message}`
 			);

@@ -8,8 +8,10 @@
  * unset), the process/endpoint refusing to start, and a handshake that produced
  * nothing useful.
  */
-import { getUpstreamById } from '../registry/index.ts';
+import { getUpstreamById, reload } from '../registry/index.ts';
 import { UpstreamPool } from '../upstream/pool.ts';
+import { resolveAuthMode, UnconfiguredUpstreamError } from '../upstream/types.ts';
+import { getOAuthConfig } from '../upstream/oauth/store.ts';
 import { resolveEnvRefs, describeMissing } from '../security/env-resolve.ts';
 import { qualify } from '../mcp/namespacing.ts';
 import { openSecretByName } from './secrets.ts';
@@ -18,6 +20,8 @@ import { getDb, type Db } from '../db/index.ts';
 import { upstreams } from '../db/schema.ts';
 import { nowIso } from '../../shared/time.ts';
 import { eq } from 'drizzle-orm';
+
+const OAUTH_AUTHORIZATION_REQUIRED = 'OAuth authorization required — click Connect';
 
 export type UpstreamTestResult = {
 	ok: boolean;
@@ -54,8 +58,22 @@ export async function testUpstream(
 		openSecret: openSecretByName
 	});
 	if (resolved.missing.length > 0) {
-		persistStatus(db, record.id, 'unconfigured', resolved.missing.join('; '));
-		return { ok: false, status: 'unconfigured', message: describeMissing(resolved.missing) };
+		const message = describeMissing(resolved.missing);
+		persistStatus(db, record.id, 'unconfigured', message);
+		return { ok: false, status: 'unconfigured', message };
+	}
+
+	// An OAuth upstream without a client/token has no way to authorize a probe:
+	// creating the scratch pool would start discovery, DCR, or token traffic and
+	// could even surface an interactive redirect. Report the actionable state
+	// instead; the admin completes the Connect flow from the detail page.
+	if (resolveAuthMode(record.connection, record.headersRef) === 'oauth') {
+		const oauth = getOAuthConfig(record.id, db);
+		if (!oauth?.clientId || !oauth?.accessTokenRef) {
+			persistStatus(db, record.id, 'unconfigured', OAUTH_AUTHORIZATION_REQUIRED);
+			audit(options, record.slug, 'unconfigured', 0);
+			return { ok: false, status: 'unconfigured', message: OAUTH_AUTHORIZATION_REQUIRED };
+		}
 	}
 
 	const started = Date.now();
@@ -93,6 +111,19 @@ export async function testUpstream(
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		await scratch.closeAll(1_000).catch(() => undefined);
+		if (error instanceof UnconfiguredUpstreamError) {
+			// A terminal OAuth refresh failure (invalid_grant) is an authorization
+			// problem, not a transient outage: keep it out of the down/backoff path.
+			const reason = error.missing || message;
+			persistStatus(db, record.id, 'unconfigured', reason);
+			audit(options, record.slug, 'unconfigured', 0);
+			return {
+				ok: false,
+				status: 'unconfigured',
+				message: reason,
+				latencyMs: Date.now() - started
+			};
+		}
 		persistStatus(db, record.id, 'down', message);
 		audit(options, record.slug, 'down', 0);
 		return { ok: false, status: 'down', message, latencyMs: Date.now() - started };
@@ -135,6 +166,7 @@ function persistStatus(
 			} as never)
 			.where(eq(upstreams.id, id))
 			.run();
+		reload(db);
 	} catch {
 		// status reporting must never break the operation that produced it
 	}
