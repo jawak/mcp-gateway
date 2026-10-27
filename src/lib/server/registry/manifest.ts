@@ -18,7 +18,7 @@ import yaml from 'yaml';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, type Db } from '../db/index.ts';
-import { profileUpstreams, profiles, upstreams } from '../db/schema.ts';
+import { profileUpstreams, profiles, upstreams, upstreamOauth } from '../db/schema.ts';
 import { uuidv7 } from '../../shared/ids.ts';
 import { nowIso } from '../../shared/time.ts';
 import { assertValidSlug, getSnapshot, reload } from './index.ts';
@@ -26,23 +26,69 @@ import { findSecretLike } from '../security/redact.ts';
 import { events } from './events.ts';
 import { recordAudit } from '../observability/audit.ts';
 
-const upstreamSchema = z.object({
-	slug: z.string().min(2).max(32),
-	name: z.string().min(1).max(120),
-	transport: z.enum(['stdio', 'http']),
-	command: z.string().min(1).optional(),
-	args: z.array(z.string()).optional(),
-	cwd: z.string().optional(),
-	url: z.string().url().optional(),
-	authStyle: z.enum(['bearer', 'header', 'none']).optional(),
-	authName: z.string().min(1).max(80).optional(),
-	authRef: z.string().min(1).max(120).optional(),
-	headersRef: z.string().min(1).max(120).optional(),
-	env: z.record(z.string(), z.string()).default({}),
-	timeoutMs: z.number().int().min(1_000).max(600_000).optional(),
-	pin: z.enum(['pinned', 'lazy']).optional(),
-	enabled: z.boolean().optional()
+const oauthConfigSchema = z.object({
+	scopes: z.string().min(1).max(200)
 });
+
+const upstreamSchema = z
+	.object({
+		slug: z.string().min(2).max(32),
+		name: z.string().min(1).max(120),
+		transport: z.enum(['stdio', 'http']),
+		command: z.string().min(1).optional(),
+		args: z.array(z.string()).optional(),
+		cwd: z.string().optional(),
+		url: z.string().url().optional(),
+		authMode: z.enum(['none', 'static', 'oauth']).optional(),
+		oauth: oauthConfigSchema.optional(),
+		authStyle: z.enum(['bearer', 'header', 'none']).optional(),
+		authName: z.string().min(1).max(80).optional(),
+		authRef: z.string().min(1).max(120).optional(),
+		headersRef: z.string().min(1).max(120).optional(),
+		env: z.record(z.string(), z.string()).default({}),
+		timeoutMs: z.number().int().min(1_000).max(600_000).optional(),
+		pin: z.enum(['pinned', 'lazy']).optional(),
+		enabled: z.boolean().optional()
+	})
+	.superRefine((upstream, ctx) => {
+		if (upstream.oauth && upstream.authMode !== 'oauth') {
+			ctx.addIssue({
+				code: 'custom',
+				path: ['oauth'],
+				message: 'oauth config is only valid with authMode "oauth"'
+			});
+		}
+		if (upstream.authMode !== 'oauth') return;
+		if (!upstream.oauth) {
+			ctx.addIssue({
+				code: 'custom',
+				path: ['oauth'],
+				message: 'authMode "oauth" needs oauth.scopes'
+			});
+		}
+		if (upstream.transport !== 'http') {
+			ctx.addIssue({
+				code: 'custom',
+				path: ['transport'],
+				message: 'authMode "oauth" is only supported for http upstreams'
+			});
+		}
+		const hasAuthRef = (upstream.authRef ?? '').trim().length > 0;
+		const hasHeadersRef = (upstream.headersRef ?? '').trim().length > 0;
+		const hasStaticStyle = upstream.authStyle === 'bearer' || upstream.authStyle === 'header';
+		if (hasStaticStyle || hasAuthRef || hasHeadersRef) {
+			const conflicting = [
+				...(hasStaticStyle ? [`authStyle "${upstream.authStyle}"`] : []),
+				...(hasAuthRef ? ['authRef'] : []),
+				...(hasHeadersRef ? ['headersRef'] : [])
+			];
+			ctx.addIssue({
+				code: 'custom',
+				path: ['authMode'],
+				message: `authMode "oauth" cannot be combined with ${conflicting.join(', ')} — clear the static credential first`
+			});
+		}
+	});
 
 const profileSchema = z.object({
 	name: z.string().min(1).max(120),
@@ -170,11 +216,20 @@ export function renderManifest(db: Db = getDb()): string {
 	const snapshot = getSnapshot();
 	const upstreamRows = db.select().from(upstreams).all();
 	const profileRows = db.select().from(profiles).all();
+	const oauthRows = new Map(
+		db
+			.select()
+			.from(upstreamOauth)
+			.all()
+			.map((row) => [row.upstreamId, row])
+	);
 
 	const manifest: Manifest = {
 		version: 1,
 		upstreams: upstreamRows.map((row) => {
 			const connection = (row.connection ?? {}) as Record<string, unknown>;
+			const oauthRow = oauthRows.get(row.id);
+			const isOauth = connection.authMode === 'oauth';
 			return {
 				slug: row.slug,
 				name: row.name,
@@ -183,12 +238,20 @@ export function renderManifest(db: Db = getDb()): string {
 				...(Array.isArray(connection.args) ? { args: connection.args as string[] } : {}),
 				...(typeof connection.cwd === 'string' ? { cwd: connection.cwd } : {}),
 				...(typeof connection.url === 'string' ? { url: connection.url } : {}),
-				...(typeof connection.authStyle === 'string'
+				...(isOauth ? { authMode: 'oauth' as const } : {}),
+				// An export must stay importable: an OAuth upstream always carries a scope,
+				// falling back to the same default the create form uses.
+				...(isOauth ? { oauth: { scopes: oauthRow?.scopes || 'mcp_all' } } : {}),
+				...(!isOauth && typeof connection.authStyle === 'string'
 					? { authStyle: connection.authStyle as ManifestUpstream['authStyle'] }
 					: {}),
-				...(typeof connection.authName === 'string' ? { authName: connection.authName } : {}),
-				...(typeof connection.authRef === 'string' ? { authRef: connection.authRef } : {}),
-				...(row.headersRef ? { headersRef: row.headersRef } : {}),
+				...(!isOauth && typeof connection.authName === 'string'
+					? { authName: connection.authName }
+					: {}),
+				...(!isOauth && typeof connection.authRef === 'string'
+					? { authRef: connection.authRef }
+					: {}),
+				...(!isOauth && row.headersRef ? { headersRef: row.headersRef } : {}),
 				env: { ...(row.envRefs ?? {}) },
 				timeoutMs: row.timeoutMs,
 				pin: row.pin,
@@ -254,6 +317,13 @@ export function diffManifest(manifest: Manifest, db: Db = getDb()): ManifestDiff
 			.all()
 			.map((row) => [row.name, row])
 	);
+	const existingOauth = new Map(
+		db
+			.select()
+			.from(upstreamOauth)
+			.all()
+			.map((row) => [row.upstreamId, row])
+	);
 	const incoming = new Set(manifest.upstreams.map((upstream) => upstream.slug));
 
 	const added: string[] = [];
@@ -265,7 +335,7 @@ export function diffManifest(manifest: Manifest, db: Db = getDb()): ManifestDiff
 			added.push(upstream.slug);
 			continue;
 		}
-		if (upstreamChanged(row, upstream)) updated.push(upstream.slug);
+		if (upstreamChanged(row, upstream, existingOauth.get(row.id))) updated.push(upstream.slug);
 		else unchanged.push(upstream.slug);
 	}
 	const removed = [...existing.keys()].filter((slug) => !incoming.has(slug));
@@ -288,8 +358,18 @@ export function diffManifest(manifest: Manifest, db: Db = getDb()): ManifestDiff
 	return { added, updated, removed, unchanged, profilesAdded, profilesUpdated };
 }
 
-function upstreamChanged(row: typeof upstreams.$inferSelect, upstream: ManifestUpstream): boolean {
+function upstreamChanged(
+	row: typeof upstreams.$inferSelect,
+	upstream: ManifestUpstream,
+	oauth?: typeof upstreamOauth.$inferSelect
+): boolean {
 	const connection = (row.connection ?? {}) as Record<string, unknown>;
+	const existingAuthMode =
+		typeof connection.authMode === 'string' ? connection.authMode : undefined;
+	// Omission must not silently downgrade an OAuth upstream to static: only an
+	// explicit authMode in the file changes the mode.
+	const incomingAuthMode = upstream.authMode ?? existingAuthMode;
+	if (existingAuthMode !== incomingAuthMode) return true;
 	if (row.transport !== upstream.transport) return true;
 	if (upstream.transport === 'stdio') {
 		if (connection.command !== upstream.command) return true;
@@ -306,6 +386,10 @@ function upstreamChanged(row: typeof upstreams.$inferSelect, upstream: ManifestU
 	if (row.timeoutMs !== (upstream.timeoutMs ?? 60_000)) return true;
 	if (row.pin !== (upstream.pin ?? 'pinned')) return true;
 	if (row.enabled !== (upstream.enabled ?? true)) return true;
+	if (incomingAuthMode === 'oauth') {
+		if (!oauth) return true;
+		if (upstream.oauth?.scopes !== undefined && upstream.oauth.scopes !== oauth.scopes) return true;
+	}
 	return false;
 }
 
@@ -351,6 +435,23 @@ export function applyManifest(
 		db.transaction((tx) => {
 			for (const upstream of manifest.upstreams) {
 				const envRefs = normaliseEnv(upstream.env);
+				const existing = tx.select().from(upstreams).where(eq(upstreams.slug, upstream.slug)).get();
+				const existingOauth = existing
+					? tx.select().from(upstreamOauth).where(eq(upstreamOauth.upstreamId, existing.id)).get()
+					: undefined;
+				const storedConnection = (existing?.connection ?? {}) as Record<string, unknown>;
+				const storedAuthMode =
+					storedConnection.authMode === 'none' ||
+					storedConnection.authMode === 'static' ||
+					storedConnection.authMode === 'oauth'
+						? storedConnection.authMode
+						: undefined;
+				// An OAuth row (or an explicit oauth mode) survives a manifest that omits
+				// authMode; only an explicit mode can downgrade the upstream.
+				const authMode =
+					upstream.authMode ??
+					(existingOauth || storedAuthMode === 'oauth' ? 'oauth' : storedAuthMode);
+				const isOauth = authMode === 'oauth';
 				const connection =
 					upstream.transport === 'stdio'
 						? {
@@ -360,11 +461,16 @@ export function applyManifest(
 							}
 						: {
 								url: upstream.url,
-								authStyle: upstream.authStyle ?? 'none',
-								...(upstream.authName ? { authName: upstream.authName } : {}),
-								...(upstream.authRef ? { authRef: upstream.authRef } : {})
+								...(authMode ? { authMode } : {}),
+								...(isOauth
+									? {}
+									: {
+											authStyle: upstream.authStyle ?? 'none',
+											...(upstream.authName ? { authName: upstream.authName } : {}),
+											...(upstream.authRef ? { authRef: upstream.authRef } : {})
+										})
 							};
-				const existing = tx.select().from(upstreams).where(eq(upstreams.slug, upstream.slug)).get();
+				const upstreamId = existing?.id ?? uuidv7();
 				if (existing) {
 					tx.update(upstreams)
 						.set({
@@ -378,12 +484,12 @@ export function applyManifest(
 							enabled: upstream.enabled ?? true,
 							updatedAt: nowIso()
 						} as never)
-						.where(eq(upstreams.id, existing.id))
+						.where(eq(upstreams.id, upstreamId))
 						.run();
 				} else {
 					tx.insert(upstreams)
 						.values({
-							id: uuidv7(),
+							id: upstreamId,
 							slug: upstream.slug,
 							name: upstream.name,
 							transport: upstream.transport,
@@ -397,6 +503,26 @@ export function applyManifest(
 							updatedAt: nowIso()
 						})
 						.run();
+				}
+				if (isOauth) {
+					const scopes = upstream.oauth?.scopes ?? existingOauth?.scopes;
+					if (!scopes) {
+						throw new ManifestError([
+							`upstream "${upstream.slug}" authMode "oauth" needs oauth.scopes`
+						]);
+					}
+					if (!existingOauth) {
+						// A fresh import can only describe an unconsented upstream. Status and
+						// token columns are deliberately left at their defaults.
+						tx.insert(upstreamOauth).values({ upstreamId, status: 'disconnected', scopes }).run();
+					} else if (existingOauth.scopes !== scopes) {
+						// Scopes are configuration; the connection state, client and token
+						// references belong to the consent flow and are never touched here.
+						tx.update(upstreamOauth)
+							.set({ scopes, updatedAt: nowIso() })
+							.where(eq(upstreamOauth.upstreamId, upstreamId))
+							.run();
+					}
 				}
 			}
 
