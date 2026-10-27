@@ -29,12 +29,20 @@ import type {
 	UpstreamHandle,
 	UpstreamRecord
 } from './types.ts';
-import { UnconfiguredUpstreamError, UpstreamTransportError, toTransportError } from './types.ts';
+import {
+	UnconfiguredUpstreamError,
+	UpstreamTransportError,
+	resolveAuthMode,
+	toTransportError
+} from './types.ts';
 import { assertUrlAllowed, createSsrfSafeFetch, type SsrfOptions } from '../security/ssrf.ts';
 import { redactString } from '../security/redact.ts';
 import { getConfig } from '../config.ts';
 import { logger as rootLogger } from '../observability/logger.ts';
 import { openSecretByName, withTimeout } from './stdio.ts';
+import { createOAuthProvider, type OAuthProvider } from './oauth/provider.ts';
+import { createOAuthFetch, ensureFreshAccessToken } from './oauth/fetch.ts';
+import { getOAuthConfig } from './oauth/store.ts';
 import { eq } from 'drizzle-orm';
 import { getDb } from '../db/index.ts';
 import { secretRefs } from '../db/schema.ts';
@@ -49,6 +57,9 @@ export type RemoteHttpOptions = {
 
 /** Header name used when an upstream is configured with `authStyle: 'header'`. */
 const DEFAULT_AUTH_HEADER = 'authorization';
+
+const OAUTH_AUTHORIZATION_REQUIRED =
+	'OAuth authorization required — open the upstream in the dashboard and click Connect';
 
 /** Open a JSON object of static/extra headers from a `secret:` reference. */
 function openHeaderSecret(name: string): Record<string, string> {
@@ -90,6 +101,46 @@ export async function connectRemoteHttp(options: RemoteHttpOptions): Promise<Ups
 		...options.ssrf
 	};
 
+	const authMode = resolveAuthMode(connection, record.headersRef);
+
+	type OAuthRuntime = { provider: OAuthProvider; headers: Record<string, string> };
+
+	function prepareOAuthRuntime(): OAuthRuntime | undefined {
+		if (authMode !== 'oauth') return undefined;
+		if (connection.authRef || record.headersRef) {
+			throw new UnconfiguredUpstreamError(
+				record.slug,
+				'OAuth configuration error: authMode "oauth" cannot be combined with authRef or headersRef — clear the static credential first'
+			);
+		}
+		const oauthConfig = getOAuthConfig(record.id);
+		const provider = createOAuthProvider({
+			upstreamId: record.id,
+			slug: record.slug,
+			serverUrl: connection.url,
+			publicUrl: config.publicUrl,
+			scopes: oauthConfig?.scopes ?? 'mcp_all',
+			createdBy: oauthConfig?.connectedBy ?? null
+		});
+		if (!oauthConfig?.clientId || !provider.tokens()?.access_token) {
+			options.onStatusChange?.({ kind: 'unconfigured', reason: 'authorization_required' });
+			throw new UnconfiguredUpstreamError(record.slug, OAUTH_AUTHORIZATION_REQUIRED);
+		}
+		return { provider, headers: nonAuthHeaders(connection.headers) };
+	}
+
+	function nonAuthHeaders(headers: Record<string, string> | undefined): Record<string, string> {
+		const result: Record<string, string> = {};
+		for (const [name, value] of Object.entries(headers ?? {})) {
+			const lower = name.toLowerCase();
+			if (lower === 'authorization' || lower === 'proxy-authorization') continue;
+			result[name] = value;
+		}
+		return result;
+	}
+
+	const oauthRuntime = prepareOAuthRuntime();
+
 	let client: Client | undefined;
 	let connected = false;
 	let closing = false;
@@ -130,15 +181,36 @@ export async function connectRemoteHttp(options: RemoteHttpOptions): Promise<Ups
 		return headers;
 	}
 
+	async function createOAuthTransport(
+		url: URL,
+		runtime: OAuthRuntime
+	): Promise<StreamableHTTPClientTransport> {
+		const fresh = await ensureFreshAccessToken(runtime.provider, 60_000, safeFetch, record.id);
+		if (!fresh) {
+			options.onStatusChange?.({ kind: 'unconfigured', reason: 'authorization_required' });
+			throw new UnconfiguredUpstreamError(record.slug, OAUTH_AUTHORIZATION_REQUIRED);
+		}
+		return new StreamableHTTPClientTransport(url, {
+			authProvider: runtime.provider,
+			fetch: createOAuthFetch({
+				upstreamId: record.id,
+				baseFetch: safeFetch,
+				provider: runtime.provider
+			}),
+			requestInit: { headers: runtime.headers }
+		});
+	}
+
 	async function connect(): Promise<void> {
 		const target = await assertUrlAllowed(connection.url, ssrfOptions);
 		safeFetch = createSsrfSafeFetch({ ...ssrfOptions, timeoutMs: record.timeoutMs });
-		const headers = await buildHeaders();
 
-		const transport = new StreamableHTTPClientTransport(target.url, {
-			requestInit: { headers },
-			fetch: safeFetch
-		});
+		const transport = oauthRuntime
+			? await createOAuthTransport(target.url, oauthRuntime)
+			: new StreamableHTTPClientTransport(target.url, {
+					requestInit: { headers: await buildHeaders() },
+					fetch: safeFetch
+				});
 		const nextClient = new Client({ name: 'mcp-gateway', version: '1.0.0' }, { capabilities: {} });
 		// Compact by design: the health monitor reports state transitions, so this
 		// fires per failed probe and must not dump a stack every time.
