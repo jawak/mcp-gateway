@@ -2,11 +2,13 @@ import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import {
 	createUpstream,
+	reload,
 	RegistryError,
 	assertValidSlug,
 	setUpstreamEnabled
 } from '$lib/server/registry';
 import { getConfig } from '$lib/server/config';
+import { getDb } from '$lib/server/db';
 import { classifyAddress } from '$lib/server/security/ssrf';
 import {
 	normaliseRef,
@@ -17,16 +19,22 @@ import {
 import { putSecret, listSecrets } from '$lib/server/governance/secrets';
 import { testUpstream } from '$lib/server/governance/upstream-test';
 import { getTemplate, listTemplates, planInstall } from '$lib/server/templates';
-import type { HttpConnection, StdioConnection } from '$lib/server/upstream/types';
+import { upsertOAuthConfig } from '$lib/server/upstream/oauth/store';
+import { uuidv7 } from '$lib/shared/ids';
+import type { AuthMode, HttpConnection, StdioConnection } from '$lib/server/upstream/types';
 
-export const load = (() => ({
-	secrets: listSecrets(),
-	templates: listTemplates().map((template) => ({
-		id: template.id,
-		name: template.name,
-		fields: template.fields
-	}))
-})) satisfies PageServerLoad;
+export const load = (() => {
+	const config = getConfig();
+	return {
+		secrets: listSecrets(),
+		templates: listTemplates().map((template) => ({
+			id: template.id,
+			name: template.name,
+			fields: template.fields
+		})),
+		redirectUri: `${config.publicUrl.origin}/oauth/callback`
+	};
+}) satisfies PageServerLoad;
 
 /**
  * Create an upstream, by hand or from a template.
@@ -44,8 +52,13 @@ export const actions = {
 
 		const slug = (values.slug ?? '').trim();
 		const name = (values.name ?? '').trim();
-		const transport = values.transport === 'http' ? 'http' : 'stdio';
+		const transport: 'stdio' | 'http' = values.transport === 'http' ? 'http' : 'stdio';
+		const explicitAuthMode =
+			values.authMode === 'none' || values.authMode === 'static' || values.authMode === 'oauth';
+		const authMode: AuthMode =
+			values.authMode === 'oauth' ? 'oauth' : values.authMode === 'static' ? 'static' : 'none';
 		const fieldErrors: Record<string, string> = {};
+		let oauthScopes = 'mcp_all';
 
 		try {
 			assertValidSlug(slug);
@@ -56,6 +69,8 @@ export const actions = {
 
 		let connection: StdioConnection | HttpConnection;
 		if (transport === 'stdio') {
+			if (authMode === 'oauth')
+				fieldErrors.transport = 'OAuth is only available for remote HTTP upstreams.';
 			const command = (values.command ?? '').trim();
 			if (!command)
 				fieldErrors.command = 'Command is required — any binary on the gateway host’s PATH.';
@@ -73,22 +88,37 @@ export const actions = {
 			if (!isHttpUrl(url))
 				fieldErrors.url =
 					'Enter an https:// URL (http:// is only allowed for localhost, or private IP addresses when MCPGW_ALLOW_PRIVATE_NETWORK=true).';
-			const style = values.authStyle ?? 'none';
-			const http: HttpConnection = {
-				url,
-				authStyle: style === 'bearer' || style === 'header' ? style : 'none'
-			};
-			if (http.authStyle === 'header') http.authName = (values.authName || 'authorization').trim();
-			const authRef = (values.authRef ?? '').trim();
-			if (authRef) {
-				try {
-					http.authRef = normaliseRef('Authorization', authRef, { allowLiteral: false });
-				} catch (error) {
-					if (error instanceof RegistryError) fieldErrors.authRef = error.message;
-					else throw error;
+			if (authMode === 'oauth') {
+				const scopes = parseOAuthScopes(values.oauthScopes);
+				if (scopes.ok) oauthScopes = scopes.value;
+				else fieldErrors.oauthScopes = scopes.error;
+				connection = { url, authMode: 'oauth' };
+			} else {
+				const style = values.authStyle ?? 'none';
+				const http: HttpConnection = {
+					url,
+					authStyle: style === 'bearer' || style === 'header' ? style : 'none'
+				};
+				if (explicitAuthMode && authMode === 'none') {
+					http.authMode = 'none';
+					http.authStyle = 'none';
+					connection = http;
+				} else {
+					if (explicitAuthMode) http.authMode = 'static';
+					if (http.authStyle === 'header')
+						http.authName = (values.authName || 'authorization').trim();
+					const authRef = (values.authRef ?? '').trim();
+					if (authRef) {
+						try {
+							http.authRef = normaliseRef('Authorization', authRef, { allowLiteral: false });
+						} catch (error) {
+							if (error instanceof RegistryError) fieldErrors.authRef = error.message;
+							else throw error;
+						}
+					}
+					connection = http;
 				}
 			}
-			connection = http;
 		}
 
 		const parsed = parseEnvLines(values.env ?? '');
@@ -118,24 +148,39 @@ export const actions = {
 			} else throw error;
 		}
 
-		try {
-			const created = createUpstream(
-				{
-					slug,
-					name,
-					transport,
-					connection,
-					envRefs,
-					pin: values.pin === 'lazy' ? 'lazy' : 'pinned',
-					timeoutMs: clampTimeout(Number.parseInt(values.timeoutMs ?? '60000', 10) || 60_000),
-					enabled: true
-				},
-				actor
-			);
-			await finish(slug, created.id, actor);
-		} catch (error) {
-			if (error instanceof RegistryError) return fail(400, { error: error.message, values });
-			throw error;
+		const input = {
+			slug,
+			name,
+			transport,
+			connection,
+			envRefs,
+			pin: values.pin === 'lazy' ? ('lazy' as const) : ('pinned' as const),
+			timeoutMs: clampTimeout(Number.parseInt(values.timeoutMs ?? '60000', 10) || 60_000),
+			enabled: true
+		};
+
+		if (authMode === 'oauth') {
+			const db = getDb();
+			const id = uuidv7();
+			try {
+				db.transaction((tx) => {
+					createUpstream({ ...input, id }, { db: tx, actorId: actor.actorId, ip: actor.ip });
+					upsertOAuthConfig(id, { status: 'disconnected', scopes: oauthScopes }, tx);
+				});
+			} catch (error) {
+				reload(db);
+				if (error instanceof RegistryError) return fail(400, { error: error.message, values });
+				throw error;
+			}
+			await finish(slug, id, actor);
+		} else {
+			try {
+				const created = createUpstream(input, actor);
+				await finish(slug, created.id, actor);
+			} catch (error) {
+				if (error instanceof RegistryError) return fail(400, { error: error.message, values });
+				throw error;
+			}
 		}
 	},
 
@@ -228,6 +273,16 @@ function isHttpUrl(value: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+type OAuthScopeParse = { ok: true; value: string } | { ok: false; error: string };
+
+function parseOAuthScopes(raw: string | undefined): OAuthScopeParse {
+	const value = raw === undefined ? 'mcp_all' : raw.trim();
+	if (!value) return { ok: false, error: 'Enter at least one OAuth scope, for example mcp_all.' };
+	if (value.length > 200)
+		return { ok: false, error: 'OAuth scopes must be 200 characters or fewer.' };
+	return { ok: true, value };
 }
 
 function clampTimeout(value: number): number {

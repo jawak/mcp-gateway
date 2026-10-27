@@ -1,15 +1,21 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { enhance } from '$app/forms';
+	import { untrack } from 'svelte';
 	import Button from '$lib/ui/Button.svelte';
 	import Card from '$lib/ui/Card.svelte';
 
 	let { form, data } = $props();
 
-	// Default comes from the server-rendered `checked` attribute below, so the
-	// radio group is correct after a failed submit without reading `form` at
-	// $state init time (which would freeze the initial value).
-	let transport = $state<'stdio' | 'http'>('stdio');
+	const initialValues = untrack(() => form?.values ?? {}) as Record<string, string>;
+	let transport = $state<'stdio' | 'http'>(initialValues.transport === 'http' ? 'http' : 'stdio');
+	let authMode = $state<'none' | 'static' | 'oauth'>(
+		initialValues.authMode === 'oauth'
+			? 'oauth'
+			: initialValues.authMode === 'static'
+				? 'static'
+				: 'none'
+	);
 </script>
 
 <div class="max-w-3xl space-y-4">
@@ -168,37 +174,103 @@
 									>{form.fieldErrors.url}</span
 								>{/if}
 						</label>
-						<label class="space-y-1 text-sm">
-							<span class="text-zinc-500">Auth style</span>
-							<select
-								name="authStyle"
-								class="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-							>
-								<option value="none">none</option>
-								<option value="bearer">bearer</option>
-								<option value="header">custom header</option>
-							</select>
-						</label>
-						<label class="space-y-1 text-sm">
-							<span class="text-zinc-500">Header name (custom header only)</span>
-							<input
-								name="authName"
-								value={form?.values?.authName ?? 'authorization'}
-								class="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-900"
-							/>
-						</label>
-						<label class="space-y-1 text-sm sm:col-span-2">
-							<span class="text-zinc-500">Credential reference</span>
-							<input
-								name="authRef"
-								value={form?.values?.authRef ?? ''}
-								placeholder="secret:sentry-token"
-								class="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-900"
-							/>
-							{#if form?.fieldErrors?.authRef}<span class="text-xs text-rose-600"
-									>{form.fieldErrors.authRef}</span
+						<fieldset class="space-y-3 sm:col-span-2">
+							<legend class="text-sm text-zinc-500">Authentication</legend>
+							<div class="flex flex-wrap gap-4 text-sm">
+								<label class="flex items-center gap-2">
+									<input
+										type="radio"
+										name="authMode"
+										value="none"
+										bind:group={authMode}
+										checked={authMode === 'none'}
+									/>
+									No authentication
+								</label>
+								<label class="flex items-center gap-2">
+									<input
+										type="radio"
+										name="authMode"
+										value="static"
+										bind:group={authMode}
+										checked={authMode === 'static'}
+									/>
+									Static credential
+								</label>
+								<label class="flex items-center gap-2">
+									<input
+										type="radio"
+										name="authMode"
+										value="oauth"
+										bind:group={authMode}
+										checked={authMode === 'oauth'}
+									/>
+									OAuth
+								</label>
+							</div>
+							{#if form?.fieldErrors?.transport}<span class="text-xs text-rose-600"
+									>{form.fieldErrors.transport}</span
 								>{/if}
-						</label>
+						</fieldset>
+
+						{#if authMode === 'oauth'}
+							<label class="space-y-1 text-sm sm:col-span-2">
+								<span class="text-zinc-500">OAuth scopes</span>
+								<input
+									name="oauthScopes"
+									value={form?.values?.oauthScopes ?? 'mcp_all'}
+									maxlength="200"
+									class="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-900"
+								/>
+								{#if form?.fieldErrors?.oauthScopes}<span class="text-xs text-rose-600"
+										>{form.fieldErrors.oauthScopes}</span
+									>{/if}
+							</label>
+							<label class="space-y-1 text-sm sm:col-span-2">
+								<span class="text-zinc-500">OAuth redirect URI (read-only)</span>
+								<input
+									readonly
+									value={data.redirectUri}
+									class="w-full rounded-md border border-zinc-300 bg-zinc-100 px-2 py-1.5 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-800"
+								/>
+								<span class="text-xs text-zinc-500">
+									Allowlist this exact URL in Datadog → Organization Settings → MCP OAuth Redirect
+									URLs, then click Connect on the upstream page.
+								</span>
+							</label>
+						{:else if authMode === 'static'}
+							<label class="space-y-1 text-sm">
+								<span class="text-zinc-500">Auth style</span>
+								<select
+									name="authStyle"
+									class="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+								>
+									<option value="none">none</option>
+									<option value="bearer">bearer</option>
+									<option value="header">custom header</option>
+								</select>
+							</label>
+							<label class="space-y-1 text-sm">
+								<span class="text-zinc-500">Header name (custom header only)</span>
+								<input
+									name="authName"
+									value={form?.values?.authName ?? 'authorization'}
+									class="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-900"
+								/>
+							</label>
+							<label class="space-y-1 text-sm sm:col-span-2">
+								<span class="text-zinc-500">Credential reference</span>
+								<input
+									name="authRef"
+									value={form?.values?.authRef ?? ''}
+									placeholder="secret:sentry-token"
+									class="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-900"
+								/>
+								{#if form?.fieldErrors?.authRef}<span class="text-xs text-rose-600"
+										>{form.fieldErrors.authRef}</span
+									>{/if}
+							</label>
+						{/if}
 					</div>
 				{/if}
 			</fieldset>
