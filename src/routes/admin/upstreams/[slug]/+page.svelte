@@ -27,6 +27,22 @@
 	const checked = $derived(page.url.searchParams.get('checked') === '1');
 	const saved = $derived(page.url.searchParams.get('saved') === '1');
 	const queryError = $derived(page.url.searchParams.get('error'));
+	const oauthConnected = $derived(page.url.searchParams.get('connected') === '1');
+	const oauthDisconnected = $derived(page.url.searchParams.get('disconnected') === '1');
+	const oauthError = $derived(page.url.searchParams.get('oauthError'));
+	const OAUTH_ERROR_MESSAGES: Record<string, string> = {
+		oauth_failed:
+			'The authorization server could not be reached. Check the upstream URL and try again.',
+		invalid_authorization_url: 'The authorization server returned an unusable authorization URL.',
+		unsupported_auth_method: 'The authorization server does not support public OAuth clients.',
+		invalid_client_metadata: 'The authorization server rejected this gateway as a client.',
+		authorization_required: 'Authorization did not complete. Try connecting again.'
+	};
+	const oauthErrorMessage = $derived(
+		oauthError
+			? (OAUTH_ERROR_MESSAGES[oauthError] ?? 'The OAuth connection could not be completed.')
+			: null
+	);
 
 	let confirmDelete = $state(false);
 	let copied = $state(false);
@@ -125,6 +141,28 @@
 			class="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200"
 		>
 			Probe finished — reload in a moment to see the new health state.
+		</p>
+	{/if}
+	{#if oauthConnected}
+		<p
+			class="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200"
+		>
+			OAuth connection is ready.
+		</p>
+	{/if}
+	{#if oauthDisconnected}
+		<p
+			class="rounded-md bg-zinc-100 px-3 py-2 text-sm text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+		>
+			OAuth credentials were removed from this gateway.
+		</p>
+	{/if}
+	{#if oauthErrorMessage}
+		<p
+			class="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:bg-rose-950 dark:text-rose-200"
+			role="alert"
+		>
+			{oauthErrorMessage}
 		</p>
 	{/if}
 	{#if queryError}
