@@ -76,7 +76,22 @@
 								<td class="py-2 pr-3 tabular-nums">{row.toolsCount}</td>
 								<td class="py-2 pr-3">
 									<span class="flex items-center gap-2">
-										<Badge status={row.status} dot title={row.error ?? undefined} />
+										{#if row.status === 'unconfigured' && row.authMode === 'oauth'}
+											<Badge
+												status="unconfigured"
+												label="Authorization required"
+												dot
+												title={row.error ?? undefined}
+											/>
+											<a
+												class="text-xs underline underline-offset-2"
+												href={resolve('/admin/upstreams/[slug]#oauth', { slug: row.slug })}
+											>
+												Connect
+											</a>
+										{:else}
+											<Badge status={row.status} dot title={row.error ?? undefined} />
+										{/if}
 										{#if row.latencyMs !== null}<span class="text-xs text-zinc-500"
 												>{row.latencyMs} ms</span
 											>{/if}

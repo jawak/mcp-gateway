@@ -2,7 +2,8 @@ import { redirect, type Actions } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { deleteUpstream, listUpstreams, setUpstreamEnabled } from '$lib/server/registry';
 import { testUpstream } from '$lib/server/governance/upstream-test';
-import { latestHealthByUpstream } from '$lib/server/upstream/health';
+import { displayStatus, latestHealthByUpstream } from '$lib/server/upstream/health';
+import { resolveAuthMode } from '$lib/server/upstream/types';
 import { RegistryError } from '$lib/server/registry';
 import { fail } from '@sveltejs/kit';
 
@@ -15,6 +16,7 @@ export const load = (() => {
 	const health = latestHealthByUpstream();
 	const rows = listUpstreams().map((record) => {
 		const latest = health.get(record.id);
+		const effective = displayStatus(record.status, latest);
 		return {
 			// rows are addressed by id for writes and by slug for URLs
 			id: record.id,
@@ -24,9 +26,10 @@ export const load = (() => {
 			enabled: record.enabled,
 			pin: record.pin,
 			toolsCount: record.toolsCount ?? 0,
-			status: latest?.status ?? (record.enabled ? 'unknown' : 'down'),
+			authMode: resolveAuthMode(record.connection, record.headersRef),
+			status: record.enabled ? effective.status : 'down',
 			latencyMs: latest?.latencyMs ?? null,
-			error: latest?.error ?? record.lastError ?? null
+			error: effective.error ?? record.lastError ?? null
 		};
 	});
 	return { rows };

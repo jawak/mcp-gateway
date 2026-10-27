@@ -11,6 +11,7 @@ import { mcpSessions, upstreamHealth } from '../db/schema.ts';
 import { pruneToolCalls } from './usage-query.ts';
 import { pruneAudit } from './audit.ts';
 import { pruneExpiredSessions } from '../governance/adminsession.ts';
+import { pruneExpiredOAuthPending } from '../upstream/oauth/store.ts';
 import { effectiveSettings } from '../settings.ts';
 
 /** Close and drop MCP sessions idle beyond the configured TTL (FR: idle GC). */
@@ -46,7 +47,8 @@ export function runRetention(db: Db = getDb()): Record<string, number> {
 		toolCalls: pruneToolCalls(settings.retentionToolCallsDays, db),
 		audit: pruneAudit(settings.retentionAuditDays, db),
 		health: pruneHealth(settings.retentionHealthDays, db),
-		webSessions: pruneExpiredSessions(db)
+		webSessions: pruneExpiredSessions(db),
+		oauthPending: pruneExpiredOAuthPending(db)
 	};
 }
 

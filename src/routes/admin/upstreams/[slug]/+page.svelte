@@ -14,21 +14,84 @@
 			args?: string[];
 			cwd?: string;
 			url?: string;
+			authMode?: string;
 			authStyle?: string;
 			authName?: string;
 			authRef?: string;
 		}
 	);
-	const status = $derived(
-		data.record.enabled
-			? ((data.record.status as { state?: string } | null)?.state ?? 'unknown')
-			: 'down'
+	const status = $derived(data.effectiveStatus);
+	const oauthAuthorizationRequired = $derived(
+		status === 'unconfigured' && data.authMode === 'oauth'
 	);
 	const checked = $derived(page.url.searchParams.get('checked') === '1');
 	const saved = $derived(page.url.searchParams.get('saved') === '1');
 	const queryError = $derived(page.url.searchParams.get('error'));
+	const oauthConnected = $derived(page.url.searchParams.get('connected') === '1');
+	const oauthDisconnected = $derived(page.url.searchParams.get('disconnected') === '1');
+	const oauthError = $derived(page.url.searchParams.get('oauthError'));
+	const OAUTH_ERROR_MESSAGES: Record<string, string> = {
+		oauth_failed:
+			'The authorization server could not be reached. Check the upstream URL and try again.',
+		invalid_authorization_url: 'The authorization server returned an unusable authorization URL.',
+		unsupported_auth_method: 'The authorization server does not support public OAuth clients.',
+		invalid_client_metadata: 'The authorization server rejected this gateway as a client.',
+		authorization_required: 'Authorization did not complete. Try connecting again.'
+	};
+	const oauthErrorMessage = $derived(
+		oauthError
+			? (OAUTH_ERROR_MESSAGES[oauthError] ?? 'The OAuth connection could not be completed.')
+			: null
+	);
 
 	let confirmDelete = $state(false);
+	let copied = $state(false);
+
+	const OAUTH_BADGE: Record<string, string> = {
+		connected: 'bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200',
+		authorizing: 'bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200',
+		error: 'bg-rose-100 text-rose-900 dark:bg-rose-950 dark:text-rose-200',
+		disconnected: 'bg-zinc-100 text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300'
+	};
+	const OAUTH_STATUS_LABEL: Record<string, string> = {
+		connected: 'Connected',
+		authorizing: 'Authorizing',
+		error: 'Error',
+		disconnected: 'Disconnected'
+	};
+
+	function oauthStatusLabel(status: string): string {
+		return OAUTH_STATUS_LABEL[status] ?? status;
+	}
+
+	function oauthBadgeClass(status: string): string {
+		return OAUTH_BADGE[status] ?? OAUTH_BADGE.disconnected;
+	}
+
+	function relativeExpiry(iso: string): string {
+		const target = new Date(iso).getTime();
+		if (Number.isNaN(target)) return iso;
+		const deltaMs = target - Date.now();
+		const minutes = Math.round(Math.abs(deltaMs) / 60_000);
+		const amount =
+			minutes < 60
+				? `${minutes} min`
+				: minutes < 1_440
+					? `${Math.round(minutes / 60)} h`
+					: `${Math.round(minutes / 1_440)} d`;
+		return deltaMs >= 0 ? `in ${amount}` : `${amount} ago`;
+	}
+
+	async function copyRedirectUri(uri: string): Promise<void> {
+		if (typeof navigator === 'undefined' || !navigator.clipboard) return;
+		try {
+			await navigator.clipboard.writeText(uri);
+			copied = true;
+			setTimeout(() => (copied = false), 1_500);
+		} catch {
+			copied = false;
+		}
+	}
 </script>
 
 <div class="space-y-4">
@@ -41,7 +104,11 @@
 		<div>
 			<h1 class="text-lg font-semibold">{data.record.name}</h1>
 			<p class="flex flex-wrap items-center gap-2 text-sm text-zinc-500">
-				<Badge {status} dot />
+				<Badge
+					{status}
+					label={oauthAuthorizationRequired ? 'Authorization required' : undefined}
+					dot
+				/>
 				<span>{data.record.transport === 'stdio' ? 'local process' : 'remote HTTP'}</span>
 				<span>·</span>
 				<span>{data.record.toolsCount ?? 0} tools</span>
@@ -76,6 +143,28 @@
 			Probe finished — reload in a moment to see the new health state.
 		</p>
 	{/if}
+	{#if oauthConnected}
+		<p
+			class="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200"
+		>
+			OAuth connection is ready.
+		</p>
+	{/if}
+	{#if oauthDisconnected}
+		<p
+			class="rounded-md bg-zinc-100 px-3 py-2 text-sm text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+		>
+			OAuth credentials were removed from this gateway.
+		</p>
+	{/if}
+	{#if oauthErrorMessage}
+		<p
+			class="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:bg-rose-950 dark:text-rose-200"
+			role="alert"
+		>
+			{oauthErrorMessage}
+		</p>
+	{/if}
 	{#if queryError}
 		<p
 			class="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:bg-rose-950 dark:text-rose-200"
@@ -106,54 +195,167 @@
 		</div>
 	{/if}
 
-	<div class="grid gap-4 lg:grid-cols-2">
-		<Card title="Connection">
-			{#if data.record.transport === 'stdio'}
-				<dl class="space-y-1 text-sm">
-					<div class="flex gap-2">
-						<dt class="w-24 text-zinc-500">Command</dt>
-						<dd class="font-mono">{connection.command}</dd>
-					</div>
-					<div class="flex gap-2">
-						<dt class="w-24 shrink-0 text-zinc-500">Arguments</dt>
-						<dd class="font-mono break-all">{(connection.args ?? []).join(' ') || '—'}</dd>
-					</div>
-					{#if connection.cwd}
-						<div class="flex gap-2">
-							<dt class="w-24 text-zinc-500">cwd</dt>
-							<dd class="font-mono break-all">{connection.cwd}</dd>
-						</div>
-					{/if}
-				</dl>
-			{:else}
-				<dl class="space-y-1 text-sm">
-					<div class="flex gap-2">
-						<dt class="w-24 text-zinc-500">URL</dt>
-						<dd class="font-mono break-all">{connection.url}</dd>
-					</div>
-					<div class="flex gap-2">
-						<dt class="w-24 text-zinc-500">Auth</dt>
-						<dd class="font-mono">{connection.authStyle ?? 'none'}</dd>
-					</div>
-					{#if connection.authName}
-						<div class="flex gap-2">
-							<dt class="w-24 text-zinc-500">Header</dt>
-							<dd class="font-mono">{connection.authName}</dd>
-						</div>
-					{/if}
-					{#if connection.authRef}
-						<div class="flex gap-2">
-							<dt class="w-24 text-zinc-500">Credential</dt>
-							<dd class="font-mono break-all">{connection.authRef}</dd>
-						</div>
-					{/if}
-				</dl>
-			{/if}
-			<p class="mt-3 text-xs text-zinc-500">
-				Env references are resolved at spawn time; the gateway's own secrets are never passed to the
-				child process.
+	{#if oauthAuthorizationRequired}
+		<div
+			class="rounded-lg border border-sky-300 bg-sky-50 p-4 text-sm dark:border-sky-900 dark:bg-sky-950/40"
+		>
+			<h2 class="font-semibold text-sky-900 dark:text-sky-200">Authorization required</h2>
+			<p class="mt-1 text-sky-900 dark:text-sky-200">
+				This upstream authenticates with OAuth. Connect it to authorize access; until then the
+				gateway will not contact it.
 			</p>
-		</Card>
+		</div>
+	{/if}
+
+	{#if data.oauth}
+		{@const redirectUri = data.oauth.redirectUri}
+		<div id="oauth">
+			<Card
+				title="OAuth connection"
+				description="This gateway connects with one shared identity for every caller."
+			>
+				<dl class="grid gap-2 text-sm sm:grid-cols-2">
+					<div class="flex gap-2">
+						<dt class="w-24 shrink-0 text-zinc-500">Status</dt>
+						<dd>
+							<span
+								class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {oauthBadgeClass(
+									data.oauth.status
+								)}"
+							>
+								{oauthStatusLabel(data.oauth.status)}
+							</span>
+						</dd>
+					</div>
+					{#if data.oauth.scopes}
+						<div class="flex gap-2">
+							<dt class="w-24 shrink-0 text-zinc-500">Scope</dt>
+							<dd class="font-mono">{data.oauth.scopes}</dd>
+						</div>
+					{/if}
+					{#if data.oauth.clientId}
+						<div class="flex gap-2">
+							<dt class="w-24 shrink-0 text-zinc-500">Client ID</dt>
+							<dd class="font-mono break-all">{data.oauth.clientId}</dd>
+						</div>
+					{/if}
+					{#if data.oauth.expiresAt}
+						<div class="flex gap-2 sm:col-span-2">
+							<dt class="w-24 shrink-0 text-zinc-500">Expires</dt>
+							<dd>
+								<span class="font-medium">{relativeExpiry(data.oauth.expiresAt)}</span>
+								<span class="text-zinc-500"
+									>· {new Date(data.oauth.expiresAt).toLocaleString()}</span
+								>
+							</dd>
+						</div>
+					{/if}
+					{#if data.oauth.connectedAt}
+						<div class="flex gap-2">
+							<dt class="w-24 shrink-0 text-zinc-500">Connected</dt>
+							<dd>{new Date(data.oauth.connectedAt).toLocaleString()}</dd>
+						</div>
+					{/if}
+					{#if data.oauth.connectedBy}
+						<div class="flex gap-2">
+							<dt class="w-24 shrink-0 text-zinc-500">Connected by</dt>
+							<dd class="break-all">{data.oauth.connectedBy}</dd>
+						</div>
+					{/if}
+				</dl>
+
+				{#if data.oauth.lastError}
+					<p
+						class="mt-3 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:bg-rose-950 dark:text-rose-200"
+						role="alert"
+					>
+						Last error: {data.oauth.lastError}
+					</p>
+				{/if}
+
+				<div class="mt-4 space-y-2">
+					<p class="text-xs text-zinc-500">
+						Allowlist this exact redirect URI in the authorization server before connecting.
+					</p>
+					<div class="flex flex-wrap items-center gap-2">
+						<code
+							class="rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1 font-mono text-xs break-all dark:border-zinc-800 dark:bg-zinc-950"
+							>{redirectUri}</code
+						>
+						<Button variant="secondary" onclick={() => copyRedirectUri(redirectUri)}>
+							{copied ? 'Copied' : 'Copy'}
+						</Button>
+					</div>
+				</div>
+
+				{#if data.oauth.canManage}
+					<div class="mt-4 flex flex-wrap gap-2">
+						<form method="POST" action="?/oauthStart" use:enhance>
+							<Button submit variant={data.oauth.status === 'connected' ? 'secondary' : 'primary'}>
+								{data.oauth.status === 'connected' ? 'Reconnect' : 'Connect'}
+							</Button>
+						</form>
+						{#if data.oauth.status === 'connected'}
+							<form method="POST" action="?/oauthDisconnect" use:enhance>
+								<Button submit variant="danger">Disconnect</Button>
+							</form>
+						{/if}
+					</div>
+				{/if}
+			</Card>
+		</div>
+	{/if}
+
+	<div class="grid gap-4 lg:grid-cols-2">
+		<div>
+			<Card title="Connection">
+				{#if data.record.transport === 'stdio'}
+					<dl class="space-y-1 text-sm">
+						<div class="flex gap-2">
+							<dt class="w-24 text-zinc-500">Command</dt>
+							<dd class="font-mono">{connection.command}</dd>
+						</div>
+						<div class="flex gap-2">
+							<dt class="w-24 shrink-0 text-zinc-500">Arguments</dt>
+							<dd class="font-mono break-all">{(connection.args ?? []).join(' ') || '—'}</dd>
+						</div>
+						{#if connection.cwd}
+							<div class="flex gap-2">
+								<dt class="w-24 text-zinc-500">cwd</dt>
+								<dd class="font-mono break-all">{connection.cwd}</dd>
+							</div>
+						{/if}
+					</dl>
+				{:else}
+					<dl class="space-y-1 text-sm">
+						<div class="flex gap-2">
+							<dt class="w-24 text-zinc-500">URL</dt>
+							<dd class="font-mono break-all">{connection.url}</dd>
+						</div>
+						<div class="flex gap-2">
+							<dt class="w-24 text-zinc-500">Auth</dt>
+							<dd class="font-mono">{connection.authStyle ?? 'none'}</dd>
+						</div>
+						{#if connection.authName}
+							<div class="flex gap-2">
+								<dt class="w-24 text-zinc-500">Header</dt>
+								<dd class="font-mono">{connection.authName}</dd>
+							</div>
+						{/if}
+						{#if connection.authRef}
+							<div class="flex gap-2">
+								<dt class="w-24 text-zinc-500">Credential</dt>
+								<dd class="font-mono break-all">{connection.authRef}</dd>
+							</div>
+						{/if}
+					</dl>
+				{/if}
+				<p class="mt-3 text-xs text-zinc-500">
+					Env references are resolved at spawn time; the gateway's own secrets are never passed to
+					the child process.
+				</p>
+			</Card>
+		</div>
 
 		<Card title="Handshake" description="Reported by the upstream at its last probe">
 			{#if data.record.status?.server}

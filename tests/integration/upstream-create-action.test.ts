@@ -12,16 +12,22 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import path from 'node:path';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { isRedirect } from '@sveltejs/kit';
+import { compile } from 'svelte/compiler';
+import { render } from 'svelte/server';
 import { actions } from '../../src/routes/admin/upstreams/new/+page.server';
 import { ensureLoaded, getUpstreamBySlug } from '../../src/lib/server/registry';
-import { openSecretByName, secretExists } from '../../src/lib/server/governance/secrets';
+import { openSecretByName, putSecret, secretExists } from '../../src/lib/server/governance/secrets';
 import { resolveEnvRefs } from '../../src/lib/server/security/env-resolve';
 import { getDb, useDatabaseForTests } from '../../src/lib/server/db';
 import { runMigrations } from '../../src/lib/server/db/migrate';
 import { resetConfigCache } from '../../src/lib/server/config';
+import { upstreamOauth } from '../../src/lib/server/db/schema';
+import { getOAuthConfig } from '../../src/lib/server/upstream/oauth/store';
+import { resolveAuthMode } from '../../src/lib/server/upstream/types';
 
 const FIXTURE = path.join(import.meta.dirname, '..', 'fixtures', 'echo-mcp-server.ts');
 
@@ -264,5 +270,291 @@ describe('the create action: http:// to a private IP literal with MCPGW_ALLOW_PR
 			url: 'http://203.0.113.5:3300/api/mcp',
 			authStyle: 'none'
 		});
+	});
+});
+
+/**
+ * OAuth creation contract (todo 11).
+ *
+ * The OAuth branch must never persist the static credential fields the same form
+ * still submits, and the upstream plus its `upstream_oauth` row are one unit: a
+ * failed OAuth insert rolls the upstream back instead of leaving a half-configured
+ * record. The rendered form is compiled here directly so the exact redirect URI
+ * and the auth-mode options are proven from the component output, not a substring
+ * of its source.
+ */
+const REDIRECT_URI = 'https://gateway.example.test/oauth/callback';
+
+async function createOutcome(form: Record<string, string>): Promise<{
+	thrown?: unknown;
+	result?: unknown;
+}> {
+	try {
+		return { result: await callCreate(form) };
+	} catch (error) {
+		return { thrown: error };
+	}
+}
+
+function expectRedirect(thrown: unknown): { status: number; location: string } {
+	expect(isRedirect(thrown)).toBe(true);
+	const redirect = thrown as { status: number; location: string };
+	expect(redirect.status).toBe(303);
+	return redirect;
+}
+
+function oauthRowCount(): number {
+	return getDb().select().from(upstreamOauth).all().length;
+}
+
+describe('the create action: authMode oauth', () => {
+	test('an OAuth HTTP create stores authMode oauth, no static refs, and a disconnected OAuth row with scopes', async () => {
+		const { thrown } = await createOutcome({
+			slug: 'dd-oauth',
+			name: 'Datadog',
+			transport: 'http',
+			url: 'http://127.0.0.1:9/mcp',
+			authMode: 'oauth',
+			oauthScopes: '  mcp_all  ',
+			authStyle: 'header',
+			authName: 'x-api-key',
+			authRef: 'secret:leftover-static',
+			timeoutMs: '1000'
+		});
+
+		const redirect = expectRedirect(thrown);
+		expect(redirect.location).toContain('/admin/upstreams/dd-oauth?created=1');
+
+		const row = getUpstreamBySlug('dd-oauth');
+		expect(row).toBeDefined();
+		expect(row?.transport).toBe('http');
+		expect(row?.connection).toEqual({
+			url: 'http://127.0.0.1:9/mcp',
+			authMode: 'oauth'
+		});
+
+		const oauth = getOAuthConfig(row!.id);
+		expect(oauth?.status).toBe('disconnected');
+		expect(oauth?.scopes).toBe('mcp_all');
+		expect(oauth?.clientId ?? null).toBeNull();
+		expect(oauth?.accessTokenRef ?? null).toBeNull();
+		expect(oauth?.refreshTokenRef ?? null).toBeNull();
+		expect(secretExists('leftover-static')).toBe(false);
+	});
+
+	test('an OAuth stdio create is a field error and writes neither an upstream nor an OAuth row', async () => {
+		const before = oauthRowCount();
+		const result = (await createOutcome({
+			slug: 'dd-oauth-stdio',
+			name: 'Datadog stdio',
+			transport: 'stdio',
+			command: process.execPath,
+			args: FIXTURE,
+			authMode: 'oauth',
+			oauthScopes: 'mcp_all'
+		})) as { result: { status: number; data: { fieldErrors?: Record<string, string> } } };
+
+		expect(result.result.status).toBe(400);
+		expect(result.result.data.fieldErrors?.transport).toBeTruthy();
+		expect(getUpstreamBySlug('dd-oauth-stdio')).toBeUndefined();
+		expect(oauthRowCount()).toBe(before);
+	});
+
+	test('a blank OAuth scope is a field error and writes nothing', async () => {
+		const before = oauthRowCount();
+		const result = (await createOutcome({
+			slug: 'dd-oauth-blank',
+			name: 'Datadog blank scope',
+			transport: 'http',
+			url: 'http://127.0.0.1:9/mcp',
+			authMode: 'oauth',
+			oauthScopes: '   '
+		})) as { result: { status: number; data: { fieldErrors?: Record<string, string> } } };
+
+		expect(result.result.status).toBe(400);
+		expect(result.result.data.fieldErrors?.oauthScopes).toBeTruthy();
+		expect(getUpstreamBySlug('dd-oauth-blank')).toBeUndefined();
+		expect(oauthRowCount()).toBe(before);
+	});
+
+	test('an OAuth scope longer than 200 characters is a field error', async () => {
+		const before = oauthRowCount();
+		const result = (await createOutcome({
+			slug: 'dd-oauth-long',
+			name: 'Datadog long scope',
+			transport: 'http',
+			url: 'http://127.0.0.1:9/mcp',
+			authMode: 'oauth',
+			oauthScopes: 'x'.repeat(201)
+		})) as { result: { status: number; data: { fieldErrors?: Record<string, string> } } };
+
+		expect(result.result.status).toBe(400);
+		expect(result.result.data.fieldErrors?.oauthScopes).toBeTruthy();
+		expect(getUpstreamBySlug('dd-oauth-long')).toBeUndefined();
+		expect(oauthRowCount()).toBe(before);
+	});
+
+	test('explicit static with a ref persists authMode static and the credential', async () => {
+		putSecret('static-token', 'synthetic-static-token', { actorId: null, ip: null });
+		const { thrown } = await createOutcome({
+			slug: 'static-upstream',
+			name: 'Static upstream',
+			transport: 'http',
+			url: 'http://127.0.0.1:9/mcp',
+			authMode: 'static',
+			authStyle: 'header',
+			authName: 'x-api-key',
+			authRef: 'secret:static-token',
+			timeoutMs: '1000'
+		});
+
+		expectRedirect(thrown);
+		const row = getUpstreamBySlug('static-upstream');
+		expect(row?.connection).toEqual({
+			url: 'http://127.0.0.1:9/mcp',
+			authMode: 'static',
+			authStyle: 'header',
+			authName: 'x-api-key',
+			authRef: 'secret:static-token'
+		});
+		expect(resolveAuthMode(row!.connection, row!.headersRef)).toBe('static');
+		expect(getOAuthConfig(row!.id)).toBeUndefined();
+	});
+
+	test('explicit static without a ref is rejected by the registry matrix and writes nothing', async () => {
+		const before = oauthRowCount();
+		const result = (await createOutcome({
+			slug: 'static-no-ref',
+			name: 'Static without ref',
+			transport: 'http',
+			url: 'http://127.0.0.1:9/mcp',
+			authMode: 'static',
+			authStyle: 'bearer',
+			timeoutMs: '1000'
+		})) as { result: { status: number; data: { error?: string } } };
+
+		expect(result.result.status).toBe(400);
+		expect(result.result.data.error).toContain('credential reference');
+		expect(getUpstreamBySlug('static-no-ref')).toBeUndefined();
+		expect(oauthRowCount()).toBe(before);
+	});
+
+	test('explicit none ignores a submitted authRef and resolves to none', async () => {
+		const { thrown } = await createOutcome({
+			slug: 'none-with-ref',
+			name: 'None with ref',
+			transport: 'http',
+			url: 'http://127.0.0.1:9/mcp',
+			authMode: 'none',
+			authStyle: 'header',
+			authName: 'x-api-key',
+			authRef: 'secret:ignored-static',
+			timeoutMs: '1000'
+		});
+
+		expectRedirect(thrown);
+		const row = getUpstreamBySlug('none-with-ref');
+		expect(row?.connection).toEqual({
+			url: 'http://127.0.0.1:9/mcp',
+			authMode: 'none',
+			authStyle: 'none'
+		});
+		expect(resolveAuthMode(row!.connection, row!.headersRef)).toBe('none');
+		expect(secretExists('ignored-static')).toBe(false);
+	});
+
+	test('a legacy submission without authMode keeps the pre-change connection shape', async () => {
+		putSecret('legacy-token', 'synthetic-legacy-token', { actorId: null, ip: null });
+		const { thrown } = await createOutcome({
+			slug: 'legacy-static',
+			name: 'Legacy static',
+			transport: 'http',
+			url: 'http://127.0.0.1:9/mcp',
+			authStyle: 'bearer',
+			authRef: 'secret:legacy-token',
+			timeoutMs: '1000'
+		});
+
+		expectRedirect(thrown);
+		const row = getUpstreamBySlug('legacy-static');
+		expect(row?.connection).toEqual({
+			url: 'http://127.0.0.1:9/mcp',
+			authStyle: 'bearer',
+			authRef: 'secret:legacy-token'
+		});
+		expect((row?.connection as { authMode?: string }).authMode).toBeUndefined();
+		expect(resolveAuthMode(row!.connection, row!.headersRef)).toBe('static');
+	});
+});
+
+async function renderNewUpstreamForm(authMode: 'none' | 'static' | 'oauth'): Promise<string> {
+	const dir = mkdtempSync(path.join(process.cwd(), '.render-new-upstream-'));
+	try {
+		const files: Record<string, string> = {
+			'Button.svelte': path.join(process.cwd(), 'src/lib/ui/Button.svelte'),
+			'Card.svelte': path.join(process.cwd(), 'src/lib/ui/Card.svelte'),
+			'Page.svelte': path.join(process.cwd(), 'src/routes/admin/upstreams/new/+page.svelte')
+		};
+
+		const writeComponent = (name: string): void => {
+			const filename = files[name]!;
+			const source = readFileSync(filename, 'utf8');
+			const { js } = compile(source, { generate: 'server', runes: true, filename });
+			const code = js.code
+				.replaceAll('$app/paths', './app-paths.js')
+				.replaceAll('$app/forms', './app-forms.js')
+				.replaceAll('$lib/ui/Button.svelte', './Button.js')
+				.replaceAll('$lib/ui/Card.svelte', './Card.js');
+			writeFileSync(path.join(dir, name.replace('.svelte', '.js')), code);
+		};
+
+		writeFileSync(path.join(dir, 'app-paths.js'), 'export const resolve = (path) => path;');
+		writeFileSync(path.join(dir, 'app-forms.js'), 'export const enhance = () => {};');
+		for (const name of Object.keys(files)) writeComponent(name);
+
+		const page = await import(`${pathToFileURL(path.join(dir, 'Page.js')).href}?v=${Date.now()}`);
+		const { body } = render(page.default, {
+			props: {
+				data: { secrets: [], templates: [], redirectUri: REDIRECT_URI },
+				form: {
+					values: { transport: 'http', authMode, oauthScopes: 'mcp_all' },
+					fieldErrors: {}
+				}
+			}
+		});
+		return body;
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+describe('the new-upstream form render', () => {
+	test('renders the exact OAuth redirect URI and the auth-mode options', async () => {
+		const body = await renderNewUpstreamForm('oauth');
+
+		expect(body).toContain(REDIRECT_URI);
+		expect(body).toContain('name="authMode"');
+		expect(body).toContain('value="none"');
+		expect(body).toContain('value="static"');
+		expect(body).toContain('value="oauth"');
+		expect(body).toContain('Organization Settings');
+		expect(body).toContain('MCP OAuth');
+	});
+
+	test('hides the static credential fields for none and oauth, and shows them for static', async () => {
+		const none = await renderNewUpstreamForm('none');
+		expect(none).not.toContain('name="authStyle"');
+		expect(none).not.toContain('name="authName"');
+		expect(none).not.toContain('name="authRef"');
+
+		const oauth = await renderNewUpstreamForm('oauth');
+		expect(oauth).not.toContain('name="authStyle"');
+		expect(oauth).not.toContain('name="authName"');
+		expect(oauth).not.toContain('name="authRef"');
+
+		const staticMode = await renderNewUpstreamForm('static');
+		expect(staticMode).toContain('name="authStyle"');
+		expect(staticMode).toContain('name="authName"');
+		expect(staticMode).toContain('name="authRef"');
 	});
 });

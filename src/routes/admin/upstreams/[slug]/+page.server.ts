@@ -11,10 +11,33 @@ import { parseArgsLine, parseEnvLines, rowsToRefs } from '$lib/server/registry/e
 
 import { listSecrets, putSecret, secretExists } from '$lib/server/governance/secrets';
 import { testUpstream } from '$lib/server/governance/upstream-test';
+import { displayStatus } from '$lib/server/upstream/health';
+import { resolveAuthMode } from '$lib/server/upstream/types';
+import {
+	clearOAuthConfig,
+	getOAuthConfig,
+	oauthTokenName,
+	readTokenSecret,
+	setOAuthStatus,
+	type OAuthConfig
+} from '$lib/server/upstream/oauth/store';
+import { buildOAuthView } from '$lib/server/upstream/oauth/view';
+import {
+	createOAuthProvider,
+	OAuthAuthorizationRequiredError,
+	OAuthStateError,
+	UnsupportedAuthMethodError
+} from '$lib/server/upstream/oauth/provider';
+import { withUpstreamLock } from '$lib/server/upstream/oauth/fetch';
+import { createSsrfSafeFetch, oauthSsrfOptions } from '$lib/server/security/ssrf';
+import { redactString } from '$lib/server/security/redact';
+import { recordAudit } from '$lib/server/observability/audit';
+import { auth } from '@modelcontextprotocol/sdk/client/auth.js';
+import { getConfig } from '$lib/server/config';
 import { getDb } from '$lib/server/db/index';
-import { upstreamHealth } from '$lib/server/db/schema';
+import { upstreamHealth, users } from '$lib/server/db/schema';
 
-export const load = (async ({ params }) => {
+export const load = (async ({ params, locals }) => {
 	const snapshot = getSnapshot();
 	const record = snapshot.upstreamsBySlug.get(params.slug);
 	if (!record) throw error(404, 'Upstream not found');
@@ -29,18 +52,53 @@ export const load = (async ({ params }) => {
 		})
 		.filter((entry): entry is NonNullable<typeof entry> => entry !== null);
 
+	const history = healthHistory(record.id);
+	const latest = history[0]
+		? { status: history[0].status, checkedAt: history[0].checkedAt, error: history[0].error }
+		: undefined;
+	const effective = displayStatus(record.status, latest);
+	const authMode = resolveAuthMode(record.connection, record.headersRef);
+	const canManage = locals?.user?.role === 'admin';
+	const oauthConfig = authMode === 'oauth' ? getOAuthConfig(record.id) : undefined;
+	const oauthSecretNames = new Set([
+		oauthTokenName(record.slug, 'access'),
+		oauthTokenName(record.slug, 'refresh'),
+		oauthTokenName(record.slug, 'client_secret')
+	]);
+
 	return {
 		record,
 		scopes,
-		secrets: listSecrets(),
+		secrets:
+			authMode === 'oauth'
+				? listSecrets().filter((secret) => !oauthSecretNames.has(secret.name))
+				: listSecrets(),
 		// which references are currently unresolvable: the reason for `unconfigured`
 		problems: describeRefs(
 			record.envRefs ?? {},
 			(record.connection as { authRef?: string } | null)?.authRef
 		),
-		history: healthHistory(record.id)
+		authMode,
+		oauth:
+			authMode === 'oauth'
+				? buildOAuthView({
+						config: oauthConfig,
+						connectedByEmail: oauthConnectedByEmail(oauthConfig?.connectedBy),
+						canManage,
+						redirectUri: `${getConfig().publicUrl.origin}/oauth/callback`
+					})
+				: null,
+		effectiveStatus: record.enabled ? effective.status : 'down',
+		effectiveError: effective.error ?? record.lastError ?? null,
+		history
 	};
 }) satisfies PageServerLoad;
+
+function oauthConnectedByEmail(userId: string | null | undefined): string | null {
+	if (!userId) return null;
+	const row = getDb().select({ email: users.email }).from(users).where(eq(users.id, userId)).get();
+	return row?.email ?? null;
+}
 
 function describeRefs(envRefs: Record<string, string>, authRef?: string): string[] {
 	const problems: string[] = [];
@@ -68,7 +126,7 @@ function healthHistory(
 		.select()
 		.from(upstreamHealth)
 		.where(eq(upstreamHealth.upstreamId, upstreamId))
-		.orderBy(desc(upstreamHealth.checkedAt))
+		.orderBy(desc(upstreamHealth.checkedAt), desc(upstreamHealth.id))
 		.limit(20)
 		.all()
 		.map((row) => ({
@@ -185,8 +243,160 @@ export const actions = {
 			throw caught;
 		}
 		throw redirect(303, '/admin/upstreams');
+	},
+
+	oauthStart: async ({ params, locals, getClientAddress }) => {
+		const record = getSnapshot().upstreamsBySlug.get(params.slug);
+		if (!record) throw error(404, 'Upstream not found');
+
+		const connection = record.connection as { url?: string } | null;
+		if (resolveAuthMode(record.connection, record.headersRef) !== 'oauth' || !connection?.url) {
+			throw error(400, 'OAuth is not enabled for this upstream');
+		}
+
+		const actor = { actorId: locals.user?.id ?? null, ip: getClientAddress() };
+		const oauthConfig = getOAuthConfig(record.id);
+
+		if (hasUsableAccessToken(oauthConfig)) {
+			throw redirect(303, detailPath(record.slug, 'connected=1'));
+		}
+
+		recordAudit({
+			actorType: 'user',
+			actorId: actor.actorId,
+			action: 'oauth.connect.start',
+			targetType: 'upstream',
+			targetId: record.id,
+			ip: actor.ip,
+			meta: { slug: record.slug }
+		});
+
+		const provider = createOAuthProvider({
+			upstreamId: record.id,
+			slug: record.slug,
+			serverUrl: connection.url,
+			publicUrl: getConfig().publicUrl,
+			scopes: oauthConfig?.scopes?.trim() ?? '',
+			createdBy: locals.user?.id ?? null
+		});
+
+		let result: Awaited<ReturnType<typeof auth>>;
+		try {
+			result = await withUpstreamLock(record.id, () =>
+				auth(provider, {
+					serverUrl: connection.url as string,
+					fetchFn: createSsrfSafeFetch(
+						oauthSsrfOptions(connection.url as string, {
+							allowPrivateNetwork: getConfig().allowPrivateNetwork
+						})
+					)
+				})
+			);
+		} catch (caught) {
+			if (caught instanceof OAuthAuthorizationRequiredError) {
+				const authorizationUrl = safeAuthorizationUrl(caught.authorizationUrl);
+				if (!authorizationUrl) {
+					oauthFailure(record, actor, 'invalid_authorization_url', caught);
+				}
+				setOAuthStatus(record.id, 'authorizing');
+				throw redirect(303, authorizationUrl);
+			}
+			oauthFailure(record, actor, safeOAuthErrorCode(caught), caught);
+		}
+
+		if (result === 'AUTHORIZED') {
+			recordAudit({
+				actorType: 'user',
+				actorId: actor.actorId,
+				action: 'oauth.connect.success',
+				targetType: 'upstream',
+				targetId: record.id,
+				ip: actor.ip,
+				meta: { slug: record.slug }
+			});
+			throw redirect(303, detailPath(record.slug, 'connected=1'));
+		}
+
+		oauthFailure(record, actor, 'authorization_required', new Error('authorization required'));
+	},
+
+	oauthDisconnect: async ({ params, locals, getClientAddress }) => {
+		const record = getSnapshot().upstreamsBySlug.get(params.slug);
+		if (!record) throw error(404, 'Upstream not found');
+
+		getDb().transaction((tx) => {
+			clearOAuthConfig(record.id, tx);
+		});
+		recordAudit({
+			actorType: 'user',
+			actorId: locals.user?.id ?? null,
+			action: 'oauth.disconnect',
+			targetType: 'upstream',
+			targetId: record.id,
+			ip: getClientAddress(),
+			meta: { slug: record.slug }
+		});
+		throw redirect(303, detailPath(record.slug, 'disconnected=1'));
 	}
 } satisfies Actions;
+
+const MAX_LAST_ERROR = 500;
+const SAFE_OAUTH_CODE = /^[a-z][a-z0-9_]{0,40}$/;
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
+
+function detailPath(slug: string, query: string): string {
+	return `/admin/upstreams/${encodeURIComponent(slug)}?${query}`;
+}
+
+function hasUsableAccessToken(config: OAuthConfig | undefined): boolean {
+	if (!config?.accessTokenRef) return false;
+	if (!readTokenSecret(config.accessTokenRef)) return false;
+	if (!config.expiresAt) return true;
+	const expiresAt = Date.parse(config.expiresAt);
+	return !Number.isFinite(expiresAt) || expiresAt > Date.now();
+}
+
+function safeAuthorizationUrl(value: string): string | null {
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		return null;
+	}
+	if (url.username || url.password) return null;
+	if (url.protocol === 'https:') return url.toString();
+	if (url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname)) return url.toString();
+	return null;
+}
+
+function safeOAuthErrorCode(caught: unknown): string {
+	if (caught instanceof OAuthStateError && SAFE_OAUTH_CODE.test(caught.code)) return caught.code;
+	if (caught instanceof UnsupportedAuthMethodError) return 'unsupported_auth_method';
+	return 'oauth_failed';
+}
+
+function oauthFailure(
+	record: { id: string; slug: string },
+	actor: { actorId: string | null; ip: string | null },
+	code: string,
+	caught: unknown
+): never {
+	const safeCode = SAFE_OAUTH_CODE.test(code) ? code : 'oauth_failed';
+	const message = caught instanceof Error ? caught.message : String(caught);
+	const lastError = redactString(message).trim().slice(0, MAX_LAST_ERROR) || 'OAuth connect failed';
+
+	setOAuthStatus(record.id, 'error', { lastError });
+	recordAudit({
+		actorType: 'user',
+		actorId: actor.actorId,
+		action: 'oauth.connect.failure',
+		targetType: 'upstream',
+		targetId: record.id,
+		ip: actor.ip,
+		meta: { code: safeCode }
+	});
+	throw redirect(303, detailPath(record.slug, `oauthError=${encodeURIComponent(safeCode)}`));
+}
 
 function clampTimeout(value: number): number {
 	return Math.min(600_000, Math.max(1_000, value));

@@ -183,8 +183,11 @@ A fresh clone could not start: every request returned 500. Four defects, one sym
   bare `bun run start` is plain HTTP and must sit behind a proxy.
 - **`/healthz` is unauthenticated by design** (container healthcheck), exposing counts
   only — no key names, no upstream URLs.
-- **Single node.** Redis-backed shared state, HA and per-user OAuth are deliberately
-  deferred to v2 (T-47, T-48).
+- **Single node.** Redis-backed shared state and HA remain deferred to v2 (T-47). A
+  shared OAuth client for HTTP upstreams is implemented: one admin Connect per upstream,
+  tokens sealed with the vault, and refresh serialised by an in-process lock that assumes
+  this single node. It still depends on a human completing consent in the browser, and
+  per-user OAuth remains deferred to v2 (T-48).
 - **Load figures are one machine, not a certified capacity number.** The suite is in
   the repo so a VPS figure can be produced on demand; publishing a capacity promise
   from a laptop would be misleading.

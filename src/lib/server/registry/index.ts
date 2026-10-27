@@ -22,7 +22,9 @@ import { events } from './events.ts';
 import { logger } from '../observability/logger.ts';
 import { recordAudit } from '../observability/audit.ts';
 import { status } from '../observability/status.ts';
-import type { UpstreamRecord } from '../upstream/types.ts';
+import { resolveAuthMode, type AuthMode, type UpstreamRecord } from '../upstream/types.ts';
+import { clearOAuthConfig, getOAuthConfig, upsertOAuthConfig } from '../upstream/oauth/store.ts';
+import { secretExists } from '../governance/secrets.ts';
 
 const log = logger.child({ component: 'registry' });
 
@@ -358,6 +360,54 @@ function assertRefsAreSafe(slug: string, envRefs: Record<string, string>, header
 	}
 }
 
+function hasRef(value: unknown): boolean {
+	return typeof value === 'string' && value.trim().length > 0;
+}
+
+function assertAuthModeMatrix(
+	slug: string,
+	transport: 'stdio' | 'http',
+	connection: UpstreamRecord['connection'],
+	headersRef: string | null | undefined
+): void {
+	const shape = connection as { authMode?: AuthMode; authStyle?: string; authRef?: string };
+	if (shape.authMode === undefined) return;
+	if (shape.authMode !== 'none' && shape.authMode !== 'static' && shape.authMode !== 'oauth') {
+		throw new RegistryError(
+			'invalid_auth_mode',
+			`${slug}: authMode must be "none", "static" or "oauth"`
+		);
+	}
+	if (shape.authMode === 'none') return;
+
+	const hasAuthRef = hasRef(shape.authRef);
+	const hasHeadersRef = hasRef(headersRef);
+	const hasAuthStyle = shape.authStyle === 'bearer' || shape.authStyle === 'header';
+
+	if (shape.authMode === 'static') {
+		if (!hasAuthRef && !hasHeadersRef) {
+			throw new RegistryError(
+				'invalid_auth_mode',
+				`${slug}: authMode "static" needs a credential reference — set authRef or a sealed headersRef`
+			);
+		}
+		return;
+	}
+
+	if (transport !== 'http') {
+		throw new RegistryError(
+			'invalid_auth_mode',
+			`${slug}: authMode "oauth" is only supported for HTTP upstreams, not ${transport}`
+		);
+	}
+	if (hasAuthStyle || hasAuthRef || hasHeadersRef) {
+		throw new RegistryError(
+			'invalid_auth_mode',
+			`${slug}: authMode "oauth" cannot be combined with authStyle, authRef or headersRef — clear the static credential first`
+		);
+	}
+}
+
 /**
  * A redacted summary of what the gateway will execute, for the audit trail.
  *
@@ -398,6 +448,7 @@ export function createUpstream(
 		throw new RegistryError('duplicate_slug', `an upstream named "${input.slug}" already exists`);
 	}
 	assertRefsAreSafe(input.slug, input.envRefs ?? {}, input.headersRef ?? undefined);
+	assertAuthModeMatrix(input.slug, input.transport, input.connection, input.headersRef);
 	const id = input.id ?? uuidv7();
 	const createdAt = nowIso();
 	db.insert(upstreams)
@@ -462,21 +513,93 @@ export function updateUpstream(
 			patch.headersRef ?? undefined
 		);
 	}
-	db.update(upstreams)
-		.set({
-			...(patch.name !== undefined ? { name: patch.name } : {}),
-			...(patch.transport !== undefined ? { transport: patch.transport } : {}),
-			...(patch.connection !== undefined
-				? { connection: patch.connection as Record<string, unknown> }
-				: {}),
-			...(patch.envRefs !== undefined ? { envRefs: patch.envRefs } : {}),
-			...(patch.headersRef !== undefined ? { headersRef: patch.headersRef } : {}),
-			...(patch.timeoutMs !== undefined ? { timeoutMs: patch.timeoutMs } : {}),
-			...(patch.pin !== undefined ? { pin: patch.pin } : {}),
-			updatedAt: nowIso()
-		} as never)
-		.where(eq(upstreams.id, id))
-		.run();
+	if (
+		patch.transport !== undefined ||
+		patch.connection !== undefined ||
+		patch.headersRef !== undefined
+	) {
+		assertAuthModeMatrix(
+			existing.slug,
+			patch.transport ?? existing.transport,
+			patch.connection ?? existing.connection,
+			patch.headersRef !== undefined ? patch.headersRef : existing.headersRef
+		);
+	}
+	const nextConnection = patch.connection ?? existing.connection;
+	const nextHeadersRef = patch.headersRef !== undefined ? patch.headersRef : existing.headersRef;
+	const nextMode = resolveAuthMode(nextConnection, nextHeadersRef);
+	const existingMode = resolveAuthMode(existing.connection, existing.headersRef);
+	const existingOauth = getOAuthConfig(id, db);
+	const existingUrl =
+		typeof (existing.connection as { url?: unknown }).url === 'string'
+			? (existing.connection as { url: string }).url
+			: undefined;
+	const nextUrl =
+		typeof (nextConnection as { url?: unknown }).url === 'string'
+			? (nextConnection as { url: string }).url
+			: undefined;
+	const endpointChanged =
+		existingMode === 'oauth' &&
+		nextMode === 'oauth' &&
+		existingUrl !== undefined &&
+		nextUrl !== undefined &&
+		existingUrl !== nextUrl;
+	const leavingOAuth = existingMode === 'oauth' && nextMode !== 'oauth';
+	if (leavingOAuth && nextMode === 'static' && existingOauth) {
+		const authRef = (nextConnection as { authRef?: string }).authRef;
+		if (authRef?.startsWith('secret:') && !secretExists(authRef)) {
+			throw new RegistryError(
+				'missing_secret',
+				`${existing.slug}: authRef "${authRef}" does not exist — create it before switching away from oauth`
+			);
+		}
+		if (nextHeadersRef && !secretExists(nextHeadersRef)) {
+			throw new RegistryError(
+				'missing_secret',
+				`${existing.slug}: headersRef "${nextHeadersRef}" does not exist — create it before switching away from oauth`
+			);
+		}
+	}
+	const applyUpdate = (executor: Db) => {
+		executor
+			.update(upstreams)
+			.set({
+				...(patch.name !== undefined ? { name: patch.name } : {}),
+				...(patch.transport !== undefined ? { transport: patch.transport } : {}),
+				...(patch.connection !== undefined
+					? { connection: patch.connection as Record<string, unknown> }
+					: {}),
+				...(patch.envRefs !== undefined ? { envRefs: patch.envRefs } : {}),
+				...(patch.headersRef !== undefined ? { headersRef: patch.headersRef } : {}),
+				...(patch.timeoutMs !== undefined ? { timeoutMs: patch.timeoutMs } : {}),
+				...(patch.pin !== undefined ? { pin: patch.pin } : {}),
+				updatedAt: nowIso()
+			} as never)
+			.where(eq(upstreams.id, id))
+			.run();
+	};
+	if (leavingOAuth) {
+		db.transaction((tx) => {
+			applyUpdate(tx);
+			clearOAuthConfig(id, tx);
+		});
+	} else if (endpointChanged) {
+		db.transaction((tx) => {
+			applyUpdate(tx);
+			clearOAuthConfig(id, tx);
+			upsertOAuthConfig(
+				id,
+				{
+					status: 'disconnected',
+					scopes: existingOauth?.scopes ?? null,
+					lastError: 'endpoint_changed'
+				},
+				tx
+			);
+		});
+	} else {
+		applyUpdate(db);
+	}
 	commitWrite(db);
 	const updated = getUpstreamById(id) as UpstreamRecord;
 	events.emit('upstream.changed', { slug: updated.slug, enabled: updated.enabled });
@@ -492,7 +615,8 @@ export function updateUpstream(
 			// rows are not buried under renames and timeout tweaks
 			...(patch.connection !== undefined
 				? describeConnection(updated.transport, updated.connection)
-				: {})
+				: {}),
+			...(endpointChanged ? { oauthReset: 'endpoint_changed' } : {})
 		},
 		db
 	);
@@ -533,7 +657,12 @@ export function deleteUpstream(id: string, writer: Db | WriteOptions = {}): void
 	const { db, actorId, ip, requestId } = writeOptions(writer);
 	const existing = snapshot.upstreamsById.get(id);
 	if (!existing) throw new RegistryError('not_found', 'upstream not found');
-	db.delete(upstreams).where(eq(upstreams.id, id)).run();
+	const oauth = getOAuthConfig(id, db);
+	const oauthRefs = [oauth?.accessTokenRef, oauth?.refreshTokenRef, oauth?.clientSecretRef];
+	db.transaction((tx) => {
+		tx.delete(upstreams).where(eq(upstreams.id, id)).run();
+		clearOAuthConfig(id, tx, { slug: existing.slug, refs: oauthRefs });
+	});
 	commitWrite(db);
 	events.emit('upstream.changed', { slug: existing.slug, enabled: false });
 	audit('upstream.delete', existing.slug, actorId, ip, requestId, {}, db);
