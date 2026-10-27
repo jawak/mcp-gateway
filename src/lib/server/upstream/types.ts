@@ -13,8 +13,15 @@ export type StdioConnection = {
 	cwd?: string;
 };
 
+export type AuthMode = 'none' | 'static' | 'oauth';
+
 export type HttpConnection = {
 	url: string;
+	/**
+	 * Explicit authentication mode. Absent on legacy records, where the mode is
+	 * inferred from `authRef`/`headersRef` exactly as before.
+	 */
+	authMode?: AuthMode;
 	/** How the sealed credential is attached. */
 	authStyle?: 'bearer' | 'header' | 'none';
 	/** Header name when authStyle === 'header'. */
@@ -198,6 +205,27 @@ export function toTransportError(slug: string, error: unknown): UpstreamTranspor
 	);
 	const aborted = (error as { name?: string } | undefined)?.name === 'AbortError';
 	return new UpstreamTransportError(slug, message, !timedOut && !aborted);
+}
+
+function hasValue(value: unknown): boolean {
+	return typeof value === 'string' && value.trim().length > 0;
+}
+
+/**
+ * Resolve the auth mode for a connection.
+ *
+ * Explicit `authMode` wins. Legacy records omit it, so they keep the historical
+ * inference: any static credential reference means `static`, otherwise `none`.
+ */
+export function resolveAuthMode(
+	connection: Connection | Record<string, unknown> | null | undefined,
+	headersRef?: string | null
+): AuthMode {
+	const shape = (connection ?? {}) as { authMode?: unknown; authRef?: unknown };
+	if (shape.authMode === 'none' || shape.authMode === 'static' || shape.authMode === 'oauth') {
+		return shape.authMode;
+	}
+	return hasValue(shape.authRef) || hasValue(headersRef) ? 'static' : 'none';
 }
 
 export function isStdioConnection(connection: Connection): connection is StdioConnection {

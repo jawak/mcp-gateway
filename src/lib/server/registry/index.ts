@@ -22,7 +22,7 @@ import { events } from './events.ts';
 import { logger } from '../observability/logger.ts';
 import { recordAudit } from '../observability/audit.ts';
 import { status } from '../observability/status.ts';
-import type { UpstreamRecord } from '../upstream/types.ts';
+import type { AuthMode, UpstreamRecord } from '../upstream/types.ts';
 
 const log = logger.child({ component: 'registry' });
 
@@ -358,6 +358,54 @@ function assertRefsAreSafe(slug: string, envRefs: Record<string, string>, header
 	}
 }
 
+function hasRef(value: unknown): boolean {
+	return typeof value === 'string' && value.trim().length > 0;
+}
+
+function assertAuthModeMatrix(
+	slug: string,
+	transport: 'stdio' | 'http',
+	connection: UpstreamRecord['connection'],
+	headersRef: string | null | undefined
+): void {
+	const shape = connection as { authMode?: AuthMode; authStyle?: string; authRef?: string };
+	if (shape.authMode === undefined) return;
+	if (shape.authMode !== 'none' && shape.authMode !== 'static' && shape.authMode !== 'oauth') {
+		throw new RegistryError(
+			'invalid_auth_mode',
+			`${slug}: authMode must be "none", "static" or "oauth"`
+		);
+	}
+	if (shape.authMode === 'none') return;
+
+	const hasAuthRef = hasRef(shape.authRef);
+	const hasHeadersRef = hasRef(headersRef);
+	const hasAuthStyle = shape.authStyle === 'bearer' || shape.authStyle === 'header';
+
+	if (shape.authMode === 'static') {
+		if (!hasAuthRef && !hasHeadersRef) {
+			throw new RegistryError(
+				'invalid_auth_mode',
+				`${slug}: authMode "static" needs a credential reference — set authRef or a sealed headersRef`
+			);
+		}
+		return;
+	}
+
+	if (transport !== 'http') {
+		throw new RegistryError(
+			'invalid_auth_mode',
+			`${slug}: authMode "oauth" is only supported for HTTP upstreams, not ${transport}`
+		);
+	}
+	if (hasAuthStyle || hasAuthRef || hasHeadersRef) {
+		throw new RegistryError(
+			'invalid_auth_mode',
+			`${slug}: authMode "oauth" cannot be combined with authStyle, authRef or headersRef — clear the static credential first`
+		);
+	}
+}
+
 /**
  * A redacted summary of what the gateway will execute, for the audit trail.
  *
@@ -398,6 +446,7 @@ export function createUpstream(
 		throw new RegistryError('duplicate_slug', `an upstream named "${input.slug}" already exists`);
 	}
 	assertRefsAreSafe(input.slug, input.envRefs ?? {}, input.headersRef ?? undefined);
+	assertAuthModeMatrix(input.slug, input.transport, input.connection, input.headersRef);
 	const id = input.id ?? uuidv7();
 	const createdAt = nowIso();
 	db.insert(upstreams)
@@ -460,6 +509,18 @@ export function updateUpstream(
 			existing.slug,
 			patch.envRefs ?? existing.envRefs ?? {},
 			patch.headersRef ?? undefined
+		);
+	}
+	if (
+		patch.transport !== undefined ||
+		patch.connection !== undefined ||
+		patch.headersRef !== undefined
+	) {
+		assertAuthModeMatrix(
+			existing.slug,
+			patch.transport ?? existing.transport,
+			patch.connection ?? existing.connection,
+			patch.headersRef !== undefined ? patch.headersRef : existing.headersRef
 		);
 	}
 	db.update(upstreams)
