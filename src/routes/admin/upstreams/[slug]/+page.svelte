@@ -29,6 +29,53 @@
 	const queryError = $derived(page.url.searchParams.get('error'));
 
 	let confirmDelete = $state(false);
+	let copied = $state(false);
+
+	const OAUTH_BADGE: Record<string, string> = {
+		connected: 'bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200',
+		authorizing: 'bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200',
+		error: 'bg-rose-100 text-rose-900 dark:bg-rose-950 dark:text-rose-200',
+		disconnected: 'bg-zinc-100 text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300'
+	};
+	const OAUTH_STATUS_LABEL: Record<string, string> = {
+		connected: 'Connected',
+		authorizing: 'Authorizing',
+		error: 'Error',
+		disconnected: 'Disconnected'
+	};
+
+	function oauthStatusLabel(status: string): string {
+		return OAUTH_STATUS_LABEL[status] ?? status;
+	}
+
+	function oauthBadgeClass(status: string): string {
+		return OAUTH_BADGE[status] ?? OAUTH_BADGE.disconnected;
+	}
+
+	function relativeExpiry(iso: string): string {
+		const target = new Date(iso).getTime();
+		if (Number.isNaN(target)) return iso;
+		const deltaMs = target - Date.now();
+		const minutes = Math.round(Math.abs(deltaMs) / 60_000);
+		const amount =
+			minutes < 60
+				? `${minutes} min`
+				: minutes < 1_440
+					? `${Math.round(minutes / 60)} h`
+					: `${Math.round(minutes / 1_440)} d`;
+		return deltaMs >= 0 ? `in ${amount}` : `${amount} ago`;
+	}
+
+	async function copyRedirectUri(uri: string): Promise<void> {
+		if (typeof navigator === 'undefined' || !navigator.clipboard) return;
+		try {
+			await navigator.clipboard.writeText(uri);
+			copied = true;
+			setTimeout(() => (copied = false), 1_500);
+		} catch {
+			copied = false;
+		}
+	}
 </script>
 
 <div class="space-y-4">
@@ -122,8 +169,107 @@
 		</div>
 	{/if}
 
-	<div class="grid gap-4 lg:grid-cols-2">
+	{#if data.oauth}
+		{@const redirectUri = data.oauth.redirectUri}
 		<div id="oauth">
+			<Card
+				title="OAuth connection"
+				description="This gateway connects with one shared identity for every caller."
+			>
+				<dl class="grid gap-2 text-sm sm:grid-cols-2">
+					<div class="flex gap-2">
+						<dt class="w-24 shrink-0 text-zinc-500">Status</dt>
+						<dd>
+							<span
+								class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {oauthBadgeClass(
+									data.oauth.status
+								)}"
+							>
+								{oauthStatusLabel(data.oauth.status)}
+							</span>
+						</dd>
+					</div>
+					{#if data.oauth.scopes}
+						<div class="flex gap-2">
+							<dt class="w-24 shrink-0 text-zinc-500">Scope</dt>
+							<dd class="font-mono">{data.oauth.scopes}</dd>
+						</div>
+					{/if}
+					{#if data.oauth.clientId}
+						<div class="flex gap-2">
+							<dt class="w-24 shrink-0 text-zinc-500">Client ID</dt>
+							<dd class="font-mono break-all">{data.oauth.clientId}</dd>
+						</div>
+					{/if}
+					{#if data.oauth.expiresAt}
+						<div class="flex gap-2 sm:col-span-2">
+							<dt class="w-24 shrink-0 text-zinc-500">Expires</dt>
+							<dd>
+								<span class="font-medium">{relativeExpiry(data.oauth.expiresAt)}</span>
+								<span class="text-zinc-500"
+									>· {new Date(data.oauth.expiresAt).toLocaleString()}</span
+								>
+							</dd>
+						</div>
+					{/if}
+					{#if data.oauth.connectedAt}
+						<div class="flex gap-2">
+							<dt class="w-24 shrink-0 text-zinc-500">Connected</dt>
+							<dd>{new Date(data.oauth.connectedAt).toLocaleString()}</dd>
+						</div>
+					{/if}
+					{#if data.oauth.connectedBy}
+						<div class="flex gap-2">
+							<dt class="w-24 shrink-0 text-zinc-500">Connected by</dt>
+							<dd class="break-all">{data.oauth.connectedBy}</dd>
+						</div>
+					{/if}
+				</dl>
+
+				{#if data.oauth.lastError}
+					<p
+						class="mt-3 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:bg-rose-950 dark:text-rose-200"
+						role="alert"
+					>
+						Last error: {data.oauth.lastError}
+					</p>
+				{/if}
+
+				<div class="mt-4 space-y-2">
+					<p class="text-xs text-zinc-500">
+						Allowlist this exact redirect URI in the authorization server before connecting.
+					</p>
+					<div class="flex flex-wrap items-center gap-2">
+						<code
+							class="rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1 font-mono text-xs break-all dark:border-zinc-800 dark:bg-zinc-950"
+							>{redirectUri}</code
+						>
+						<Button variant="secondary" onclick={() => copyRedirectUri(redirectUri)}>
+							{copied ? 'Copied' : 'Copy'}
+						</Button>
+					</div>
+				</div>
+
+				{#if data.oauth.canManage}
+					<div class="mt-4 flex flex-wrap gap-2">
+						<form method="POST" action="?/oauthStart" use:enhance>
+							<Button submit variant={data.oauth.status === 'connected' ? 'secondary' : 'primary'}>
+								{data.oauth.status === 'connected' ? 'Reconnect' : 'Connect'}
+							</Button>
+						</form>
+						{#if data.oauth.status === 'connected'}
+							<form method="POST" action="?/oauthDisconnect" use:enhance>
+								<Button submit variant="danger">Disconnect</Button>
+							</form>
+						{/if}
+					</div>
+				{/if}
+			</Card>
+		</div>
+	{/if}
+
+	<div class="grid gap-4 lg:grid-cols-2">
+		<div>
 			<Card title="Connection">
 				{#if data.record.transport === 'stdio'}
 					<dl class="space-y-1 text-sm">

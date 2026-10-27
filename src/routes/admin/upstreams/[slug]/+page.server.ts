@@ -13,10 +13,13 @@ import { listSecrets, putSecret, secretExists } from '$lib/server/governance/sec
 import { testUpstream } from '$lib/server/governance/upstream-test';
 import { displayStatus } from '$lib/server/upstream/health';
 import { resolveAuthMode } from '$lib/server/upstream/types';
+import { getOAuthConfig, oauthTokenName } from '$lib/server/upstream/oauth/store';
+import { buildOAuthView } from '$lib/server/upstream/oauth/view';
+import { getConfig } from '$lib/server/config';
 import { getDb } from '$lib/server/db/index';
-import { upstreamHealth } from '$lib/server/db/schema';
+import { upstreamHealth, users } from '$lib/server/db/schema';
 
-export const load = (async ({ params }) => {
+export const load = (async ({ params, locals }) => {
 	const snapshot = getSnapshot();
 	const record = snapshot.upstreamsBySlug.get(params.slug);
 	if (!record) throw error(404, 'Upstream not found');
@@ -36,22 +39,48 @@ export const load = (async ({ params }) => {
 		? { status: history[0].status, checkedAt: history[0].checkedAt, error: history[0].error }
 		: undefined;
 	const effective = displayStatus(record.status, latest);
+	const authMode = resolveAuthMode(record.connection, record.headersRef);
+	const canManage = locals?.user?.role === 'admin';
+	const oauthConfig = authMode === 'oauth' ? getOAuthConfig(record.id) : undefined;
+	const oauthSecretNames = new Set([
+		oauthTokenName(record.slug, 'access'),
+		oauthTokenName(record.slug, 'refresh'),
+		oauthTokenName(record.slug, 'client_secret')
+	]);
 
 	return {
 		record,
 		scopes,
-		secrets: listSecrets(),
+		secrets:
+			authMode === 'oauth'
+				? listSecrets().filter((secret) => !oauthSecretNames.has(secret.name))
+				: listSecrets(),
 		// which references are currently unresolvable: the reason for `unconfigured`
 		problems: describeRefs(
 			record.envRefs ?? {},
 			(record.connection as { authRef?: string } | null)?.authRef
 		),
-		authMode: resolveAuthMode(record.connection, record.headersRef),
+		authMode,
+		oauth:
+			authMode === 'oauth'
+				? buildOAuthView({
+						config: oauthConfig,
+						connectedByEmail: oauthConnectedByEmail(oauthConfig?.connectedBy),
+						canManage,
+						redirectUri: `${getConfig().publicUrl.origin}/oauth/callback`
+					})
+				: null,
 		effectiveStatus: record.enabled ? effective.status : 'down',
 		effectiveError: effective.error ?? record.lastError ?? null,
 		history
 	};
 }) satisfies PageServerLoad;
+
+function oauthConnectedByEmail(userId: string | null | undefined): string | null {
+	if (!userId) return null;
+	const row = getDb().select({ email: users.email }).from(users).where(eq(users.id, userId)).get();
+	return row?.email ?? null;
+}
 
 function describeRefs(envRefs: Record<string, string>, authRef?: string): string[] {
 	const problems: string[] = [];
