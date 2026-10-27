@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `authMode: oauth` for HTTP upstreams: discovery, dynamic client registration, PKCE
+  S256, and token refresh, with access and refresh tokens stored sealed in the vault.
+- a public `/oauth/callback` route that validates single-use state, exchanges the
+  authorization code, and stores the result against the upstream.
+- admin Connect and Disconnect actions on the upstream detail page, showing status and
+  expiry; Disconnect is local and Datadog revocation stays a manual UI step.
+- Datadog EU (`https://mcp.datadoghq.eu`) as a documented OAuth upstream, after the org
+  admin allowlists the callback URL under MCP OAuth Redirect URLs.
+
 ## [0.1.4] - 2026-09-29
 
 ### Added
