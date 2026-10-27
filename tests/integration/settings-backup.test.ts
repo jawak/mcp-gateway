@@ -177,10 +177,17 @@ describe('retention', () => {
 		resetSettingsCache();
 		const first = runRetention();
 		const second = runRetention();
-		expect(Object.keys(first).sort()).toEqual(['audit', 'health', 'toolCalls', 'webSessions']);
+		expect(Object.keys(first).sort()).toEqual([
+			'audit',
+			'health',
+			'oauthPending',
+			'toolCalls',
+			'webSessions'
+		]);
 		// second pass has nothing left to delete
 		expect(second.toolCalls).toBe(0);
 		expect(second.health).toBe(0);
+		expect(second.oauthPending).toBe(0);
 		clearOverride('retentionToolCallsDays');
 		clearOverride('retentionAuditDays');
 		clearOverride('retentionHealthDays');

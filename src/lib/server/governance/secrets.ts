@@ -10,7 +10,7 @@
  */
 import { eq } from 'drizzle-orm';
 import { getDb, type Db } from '../db/index.ts';
-import { secretRefs, upstreams } from '../db/schema.ts';
+import { secretRefs, upstreamOauth, upstreams } from '../db/schema.ts';
 import { sealSecret, openSecret, VaultError } from '../security/vault.ts';
 import { uuidv7 } from '../../shared/ids.ts';
 import { nowIso } from '../../shared/time.ts';
@@ -119,6 +119,36 @@ export function putSecret(
 }
 
 /**
+ * Upstream slugs that still reference a secret, across env refs, static auth,
+ * sealed headers, and the three OAuth token/client-secret columns.
+ */
+export function secretReferencedBy(name: string, db: Db = getDb()): string[] {
+	const upstreamRows = db.select().from(upstreams).all();
+	const slugs = new Set<string>();
+	for (const row of upstreamRows) {
+		if (
+			Object.values(row.envRefs ?? {}).some((ref) => isSecretRef(ref) === name) ||
+			isSecretRef((row.connection as { authRef?: string } | null)?.authRef) === name ||
+			row.headersRef === name
+		) {
+			slugs.add(row.slug);
+		}
+	}
+	const oauthRows = db.select().from(upstreamOauth).all();
+	for (const row of oauthRows) {
+		if (
+			row.accessTokenRef === name ||
+			row.refreshTokenRef === name ||
+			row.clientSecretRef === name
+		) {
+			const upstream = upstreamRows.find((candidate) => candidate.id === row.upstreamId);
+			if (upstream) slugs.add(upstream.slug);
+		}
+	}
+	return [...slugs];
+}
+
+/**
  * Delete a secret. Refuses while an upstream still references it: leaving a
  * dangling reference would turn that upstream into a confusing "unconfigured"
  * failure at its next spawn instead of failing here with a clear message.
@@ -128,20 +158,11 @@ export function deleteSecret(
 	options: { actorId?: string | null; ip?: string | null; requestId?: string | null; db?: Db } = {}
 ): void {
 	const db = options.db ?? getDb();
-	const referencing = db
-		.select()
-		.from(upstreams)
-		.all()
-		.filter(
-			(row) =>
-				Object.values(row.envRefs ?? {}).some((ref) => isSecretRef(ref) === name) ||
-				isSecretRef((row.connection as { authRef?: string } | null)?.authRef) === name ||
-				row.headersRef === name
-		);
-	if (referencing.length > 0) {
+	const slugs = secretReferencedBy(name, db);
+	if (slugs.length > 0) {
 		throw new RegistryError(
 			'secret_in_use',
-			`still referenced by: ${[...new Set(referencing.map((row) => row.slug))].join(', ')} — repoint those upstreams first`
+			`still referenced by: ${[...slugs].join(', ')} — repoint those upstreams first`
 		);
 	}
 	db.delete(secretRefs).where(eq(secretRefs.name, name)).run();

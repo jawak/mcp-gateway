@@ -11,10 +11,11 @@
  * This is an internal module: no route or transport imports it for reads.
  */
 import type { OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
-import { and, desc, eq, gt } from 'drizzle-orm';
+import { and, desc, eq, gt, lt } from 'drizzle-orm';
 import { getDb, type Db } from '../../db/index.ts';
 import { secretRefs, upstreamOauth, upstreamOauthPending, upstreams } from '../../db/schema.ts';
 import { recordAudit } from '../../observability/audit.ts';
+import { secretReferencedBy } from '../../governance/secrets.ts';
 import { openSecret, sealSecret, VaultError, type Sealed } from '../../security/vault.ts';
 import { isoFromNow, nowIso } from '../../../shared/time.ts';
 import { uuidv7 } from '../../../shared/ids.ts';
@@ -153,6 +154,49 @@ export function upsertOAuthConfig(
 
 export function deleteOAuthConfig(upstreamId: string, db: Db = getDb()): void {
 	db.delete(upstreamOauth).where(eq(upstreamOauth.upstreamId, upstreamId)).run();
+}
+
+export type ClearOAuthConfigOptions = {
+	/** Slug captured before the upstream row was removed. */
+	slug?: string;
+	/** Token refs captured before the OAuth/upstream row was removed. */
+	refs?: Array<string | null | undefined>;
+};
+
+/**
+ * Remove every credential and in-flight flow for an upstream.
+ *
+ * The OAuth rows are deleted first so `secretReferencedBy` cannot count this
+ * upstream's own references. A sealed secret is then deleted only when no
+ * remaining upstream (or OAuth row) still points at it, which keeps
+ * cross-upstream and self-referential static refs resolvable. `deleteTokenSecret`
+ * keeps the existing `oauth.token.clear` system audits and records only the NAME.
+ */
+export function clearOAuthConfig(
+	upstreamId: string,
+	db: Db = getDb(),
+	options: ClearOAuthConfigOptions = {}
+): void {
+	const slug = options.slug ?? slugFor(upstreamId, db);
+	const existing = getOAuthConfig(upstreamId, db);
+	const names = new Set<string>([
+		oauthTokenName(slug, 'access'),
+		oauthTokenName(slug, 'refresh'),
+		oauthTokenName(slug, 'client_secret')
+	]);
+	for (const ref of [
+		existing?.accessTokenRef,
+		existing?.refreshTokenRef,
+		existing?.clientSecretRef,
+		...(options.refs ?? [])
+	]) {
+		if (ref) names.add(ref);
+	}
+	deletePendingForUpstream(upstreamId, db);
+	deleteOAuthConfig(upstreamId, db);
+	for (const name of names) {
+		if (secretReferencedBy(name, db).length === 0) deleteTokenSecret(name, db);
+	}
 }
 
 export function setOAuthStatus(
@@ -422,6 +466,16 @@ export function deletePendingForUpstream(upstreamId: string, db: Db = getDb()): 
 	const removed = db
 		.delete(upstreamOauthPending)
 		.where(eq(upstreamOauthPending.upstreamId, upstreamId))
+		.returning({ state: upstreamOauthPending.state })
+		.all();
+	return removed.length;
+}
+
+/** Retention: drop abandoned authorization flows that can never be resumed. */
+export function pruneExpiredOAuthPending(db: Db = getDb()): number {
+	const removed = db
+		.delete(upstreamOauthPending)
+		.where(lt(upstreamOauthPending.expiresAt, nowIso()))
 		.returning({ state: upstreamOauthPending.state })
 		.all();
 	return removed.length;

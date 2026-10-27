@@ -22,7 +22,9 @@ import { events } from './events.ts';
 import { logger } from '../observability/logger.ts';
 import { recordAudit } from '../observability/audit.ts';
 import { status } from '../observability/status.ts';
-import type { AuthMode, UpstreamRecord } from '../upstream/types.ts';
+import { resolveAuthMode, type AuthMode, type UpstreamRecord } from '../upstream/types.ts';
+import { clearOAuthConfig, getOAuthConfig } from '../upstream/oauth/store.ts';
+import { secretExists } from '../governance/secrets.ts';
 
 const log = logger.child({ component: 'registry' });
 
@@ -523,21 +525,52 @@ export function updateUpstream(
 			patch.headersRef !== undefined ? patch.headersRef : existing.headersRef
 		);
 	}
-	db.update(upstreams)
-		.set({
-			...(patch.name !== undefined ? { name: patch.name } : {}),
-			...(patch.transport !== undefined ? { transport: patch.transport } : {}),
-			...(patch.connection !== undefined
-				? { connection: patch.connection as Record<string, unknown> }
-				: {}),
-			...(patch.envRefs !== undefined ? { envRefs: patch.envRefs } : {}),
-			...(patch.headersRef !== undefined ? { headersRef: patch.headersRef } : {}),
-			...(patch.timeoutMs !== undefined ? { timeoutMs: patch.timeoutMs } : {}),
-			...(patch.pin !== undefined ? { pin: patch.pin } : {}),
-			updatedAt: nowIso()
-		} as never)
-		.where(eq(upstreams.id, id))
-		.run();
+	const nextConnection = patch.connection ?? existing.connection;
+	const nextHeadersRef = patch.headersRef !== undefined ? patch.headersRef : existing.headersRef;
+	const nextMode = resolveAuthMode(nextConnection, nextHeadersRef);
+	const leavingOAuth =
+		resolveAuthMode(existing.connection, existing.headersRef) === 'oauth' && nextMode !== 'oauth';
+	if (leavingOAuth && nextMode === 'static' && getOAuthConfig(id, db)) {
+		const authRef = (nextConnection as { authRef?: string }).authRef;
+		if (authRef?.startsWith('secret:') && !secretExists(authRef)) {
+			throw new RegistryError(
+				'missing_secret',
+				`${existing.slug}: authRef "${authRef}" does not exist — create it before switching away from oauth`
+			);
+		}
+		if (nextHeadersRef && !secretExists(nextHeadersRef)) {
+			throw new RegistryError(
+				'missing_secret',
+				`${existing.slug}: headersRef "${nextHeadersRef}" does not exist — create it before switching away from oauth`
+			);
+		}
+	}
+	const applyUpdate = (executor: Db) => {
+		executor
+			.update(upstreams)
+			.set({
+				...(patch.name !== undefined ? { name: patch.name } : {}),
+				...(patch.transport !== undefined ? { transport: patch.transport } : {}),
+				...(patch.connection !== undefined
+					? { connection: patch.connection as Record<string, unknown> }
+					: {}),
+				...(patch.envRefs !== undefined ? { envRefs: patch.envRefs } : {}),
+				...(patch.headersRef !== undefined ? { headersRef: patch.headersRef } : {}),
+				...(patch.timeoutMs !== undefined ? { timeoutMs: patch.timeoutMs } : {}),
+				...(patch.pin !== undefined ? { pin: patch.pin } : {}),
+				updatedAt: nowIso()
+			} as never)
+			.where(eq(upstreams.id, id))
+			.run();
+	};
+	if (leavingOAuth) {
+		db.transaction((tx) => {
+			applyUpdate(tx);
+			clearOAuthConfig(id, tx);
+		});
+	} else {
+		applyUpdate(db);
+	}
 	commitWrite(db);
 	const updated = getUpstreamById(id) as UpstreamRecord;
 	events.emit('upstream.changed', { slug: updated.slug, enabled: updated.enabled });
@@ -594,7 +627,12 @@ export function deleteUpstream(id: string, writer: Db | WriteOptions = {}): void
 	const { db, actorId, ip, requestId } = writeOptions(writer);
 	const existing = snapshot.upstreamsById.get(id);
 	if (!existing) throw new RegistryError('not_found', 'upstream not found');
-	db.delete(upstreams).where(eq(upstreams.id, id)).run();
+	const oauth = getOAuthConfig(id, db);
+	const oauthRefs = [oauth?.accessTokenRef, oauth?.refreshTokenRef, oauth?.clientSecretRef];
+	db.transaction((tx) => {
+		tx.delete(upstreams).where(eq(upstreams.id, id)).run();
+		clearOAuthConfig(id, tx, { slug: existing.slug, refs: oauthRefs });
+	});
 	commitWrite(db);
 	events.emit('upstream.changed', { slug: existing.slug, enabled: false });
 	audit('upstream.delete', existing.slug, actorId, ip, requestId, {}, db);
