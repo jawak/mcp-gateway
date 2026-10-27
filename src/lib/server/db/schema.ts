@@ -124,6 +124,63 @@ export const upstreamHealth = sqliteTable(
 	(t) => [index('upstream_health_recent_idx').on(t.upstreamId, t.checkedAt)]
 );
 
+/**
+ * OAuth client registration for one HTTP upstream. Token values never live here:
+ * `access_token_ref` / `refresh_token_ref` / `client_secret_ref` name sealed rows
+ * in `secret_refs`, and `discovery` is the non-secret SDK discovery state.
+ */
+export const upstreamOauth = sqliteTable(
+	'upstream_oauth',
+	{
+		upstreamId: text('upstream_id')
+			.primaryKey()
+			.references(() => upstreams.id, { onDelete: 'cascade' }),
+		status: text('status', { enum: ['disconnected', 'authorizing', 'connected', 'error'] })
+			.notNull()
+			.default('disconnected'),
+		clientId: text('client_id'),
+		clientSecretRef: text('client_secret_ref'),
+		authorizationServerUrl: text('authorization_server_url'),
+		resourceMetadataUrl: text('resource_metadata_url'),
+		authorizationEndpoint: text('authorization_endpoint'),
+		tokenEndpoint: text('token_endpoint'),
+		registrationEndpoint: text('registration_endpoint'),
+		scopes: text('scopes'),
+		discovery: text('discovery', { mode: 'json' }).$type<Record<string, unknown> | null>(),
+		accessTokenRef: text('access_token_ref'),
+		refreshTokenRef: text('refresh_token_ref'),
+		expiresAt: text('expires_at'),
+		tokenType: text('token_type'),
+		grantedScope: text('granted_scope'),
+		lastError: text('last_error'),
+		connectedBy: text('connected_by').references(() => users.id, { onDelete: 'set null' }),
+		connectedAt: text('connected_at'),
+		createdAt: text('created_at').notNull().default(now()),
+		updatedAt: text('updated_at').notNull().default(now())
+	},
+	(t) => [index('upstream_oauth_status_idx').on(t.status)]
+);
+
+/**
+ * One in-flight authorization-code flow per upstream. `verifier_sealed` holds
+ * the JSON `Sealed` record (cipher/iv/tag/keyVer) — never the plaintext verifier.
+ */
+export const upstreamOauthPending = sqliteTable(
+	'upstream_oauth_pending',
+	{
+		state: text('state').primaryKey(),
+		upstreamId: text('upstream_id')
+			.notNull()
+			.references(() => upstreams.id, { onDelete: 'cascade' }),
+		verifierSealed: text('verifier_sealed').notNull(),
+		redirectUri: text('redirect_uri').notNull(),
+		createdBy: text('created_by').references(() => users.id, { onDelete: 'set null' }),
+		createdAt: text('created_at').notNull().default(now()),
+		expiresAt: text('expires_at').notNull()
+	},
+	(t) => [uniqueIndex('upstream_oauth_pending_upstream_idx').on(t.upstreamId)]
+);
+
 export const profiles = sqliteTable(
 	'profiles',
 	{
@@ -309,6 +366,8 @@ export const schema = {
 	upstreams,
 	secretRefs,
 	upstreamHealth,
+	upstreamOauth,
+	upstreamOauthPending,
 	profiles,
 	profileUpstreams,
 	apiKeys,
