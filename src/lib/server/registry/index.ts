@@ -23,7 +23,7 @@ import { logger } from '../observability/logger.ts';
 import { recordAudit } from '../observability/audit.ts';
 import { status } from '../observability/status.ts';
 import { resolveAuthMode, type AuthMode, type UpstreamRecord } from '../upstream/types.ts';
-import { clearOAuthConfig, getOAuthConfig } from '../upstream/oauth/store.ts';
+import { clearOAuthConfig, getOAuthConfig, upsertOAuthConfig } from '../upstream/oauth/store.ts';
 import { secretExists } from '../governance/secrets.ts';
 
 const log = logger.child({ component: 'registry' });
@@ -528,9 +528,24 @@ export function updateUpstream(
 	const nextConnection = patch.connection ?? existing.connection;
 	const nextHeadersRef = patch.headersRef !== undefined ? patch.headersRef : existing.headersRef;
 	const nextMode = resolveAuthMode(nextConnection, nextHeadersRef);
-	const leavingOAuth =
-		resolveAuthMode(existing.connection, existing.headersRef) === 'oauth' && nextMode !== 'oauth';
-	if (leavingOAuth && nextMode === 'static' && getOAuthConfig(id, db)) {
+	const existingMode = resolveAuthMode(existing.connection, existing.headersRef);
+	const existingOauth = getOAuthConfig(id, db);
+	const existingUrl =
+		typeof (existing.connection as { url?: unknown }).url === 'string'
+			? (existing.connection as { url: string }).url
+			: undefined;
+	const nextUrl =
+		typeof (nextConnection as { url?: unknown }).url === 'string'
+			? (nextConnection as { url: string }).url
+			: undefined;
+	const endpointChanged =
+		existingMode === 'oauth' &&
+		nextMode === 'oauth' &&
+		existingUrl !== undefined &&
+		nextUrl !== undefined &&
+		existingUrl !== nextUrl;
+	const leavingOAuth = existingMode === 'oauth' && nextMode !== 'oauth';
+	if (leavingOAuth && nextMode === 'static' && existingOauth) {
 		const authRef = (nextConnection as { authRef?: string }).authRef;
 		if (authRef?.startsWith('secret:') && !secretExists(authRef)) {
 			throw new RegistryError(
@@ -568,6 +583,20 @@ export function updateUpstream(
 			applyUpdate(tx);
 			clearOAuthConfig(id, tx);
 		});
+	} else if (endpointChanged) {
+		db.transaction((tx) => {
+			applyUpdate(tx);
+			clearOAuthConfig(id, tx);
+			upsertOAuthConfig(
+				id,
+				{
+					status: 'disconnected',
+					scopes: existingOauth?.scopes ?? null,
+					lastError: 'endpoint_changed'
+				},
+				tx
+			);
+		});
 	} else {
 		applyUpdate(db);
 	}
@@ -586,7 +615,8 @@ export function updateUpstream(
 			// rows are not buried under renames and timeout tweaks
 			...(patch.connection !== undefined
 				? describeConnection(updated.transport, updated.connection)
-				: {})
+				: {}),
+			...(endpointChanged ? { oauthReset: 'endpoint_changed' } : {})
 		},
 		db
 	);

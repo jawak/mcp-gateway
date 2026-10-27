@@ -84,6 +84,50 @@ function upstreamId(slug: string): string {
 	return row.id;
 }
 
+function connectOAuth(slug: string): string {
+	const id = upstreamId(slug);
+	const accessName = oauthTokenName(slug, 'access');
+	saveTokenSecret(accessName, 'manifest-url-change-access-token', db);
+	upsertOAuthConfig(
+		id,
+		{
+			status: 'connected',
+			clientId: 'client-stays-until-url-change',
+			accessTokenRef: accessName,
+			scopes: 'mcp_all',
+			expiresAt: '2030-01-01T00:00:00.000Z',
+			grantedScope: 'mcp_all',
+			connectedAt: '2026-01-01T00:00:00.000Z',
+			lastError: null
+		},
+		db
+	);
+	return id;
+}
+
+function downgradedManifest(slug: string, authMode: 'none' | 'static'): string {
+	return `version: 1
+upstreams:
+  - slug: ${slug}
+    name: Datadog
+    transport: http
+    url: https://mcp.example.test/mcp
+    authMode: ${authMode}
+`;
+}
+
+function stdioManifest(slug: string): string {
+	return `version: 1
+upstreams:
+  - slug: ${slug}
+    name: Datadog
+    transport: stdio
+    command: node
+    args:
+      - server.js
+`;
+}
+
 describe('oauth manifest import', () => {
 	test('creates a disconnected OAuth row with the manifest scopes', () => {
 		const slug = 'oauth-import-fresh';
@@ -155,6 +199,61 @@ describe('oauth manifest export', () => {
 		]) {
 			expect(text).not.toContain(credential);
 		}
+	});
+});
+
+describe('oauth manifest endpoint changes', () => {
+	test('a URL change clears the client, discovery and tokens, then recreates disconnected with scopes', () => {
+		const slug = 'oauth-manifest-url-change';
+		applyManifest(parseManifest(oauthManifest(slug)));
+		const id = connectOAuth(slug);
+		const accessName = oauthTokenName(slug, 'access');
+
+		const changed = oauthManifest(slug).replace(
+			'https://mcp.example.test/mcp',
+			'https://new.example.test/mcp'
+		);
+		const result = applyManifest(parseManifest(changed));
+
+		expect(result.updated).toEqual([slug]);
+		const config = getOAuthConfig(id, db);
+		expect(config?.status).toBe('disconnected');
+		expect(config?.lastError).toBe('endpoint_changed');
+		expect(config?.scopes).toBe('mcp_all');
+		expect(config?.clientId).toBeNull();
+		expect(config?.discovery).toBeNull();
+		expect(config?.accessTokenRef).toBeNull();
+		expect(config?.refreshTokenRef).toBeNull();
+		expect(config?.connectedAt).toBeNull();
+		expect(readTokenSecret(accessName, db)).toBeUndefined();
+	});
+
+	test('an explicit authMode none or static downgrade clears the OAuth row entirely', () => {
+		for (const authMode of ['none', 'static'] as const) {
+			const slug = `oauth-manifest-downgrade-${authMode}`;
+			applyManifest(parseManifest(oauthManifest(slug)));
+			const id = connectOAuth(slug);
+
+			const result = applyManifest(parseManifest(downgradedManifest(slug, authMode)));
+
+			expect(result.updated).toEqual([slug]);
+			expect(getOAuthConfig(id, db)).toBeUndefined();
+			expect(readTokenSecret(oauthTokenName(slug, 'access'), db)).toBeUndefined();
+		}
+	});
+
+	test('a stdio transport never retains an OAuth row', () => {
+		const slug = 'oauth-manifest-to-stdio';
+		applyManifest(parseManifest(oauthManifest(slug)));
+		const id = connectOAuth(slug);
+
+		const result = applyManifest(parseManifest(stdioManifest(slug)));
+
+		expect(result.updated).toEqual([slug]);
+		const row = db.select().from(upstreams).where(eq(upstreams.slug, slug)).get();
+		expect(row?.transport).toBe('stdio');
+		expect(getOAuthConfig(id, db)).toBeUndefined();
+		expect(readTokenSecret(oauthTokenName(slug, 'access'), db)).toBeUndefined();
 	});
 });
 

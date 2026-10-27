@@ -29,7 +29,7 @@ import {
 	UnsupportedAuthMethodError
 } from '$lib/server/upstream/oauth/provider';
 import { withUpstreamLock } from '$lib/server/upstream/oauth/fetch';
-import { createSsrfSafeFetch } from '$lib/server/security/ssrf';
+import { createSsrfSafeFetch, oauthSsrfOptions } from '$lib/server/security/ssrf';
 import { redactString } from '$lib/server/security/redact';
 import { recordAudit } from '$lib/server/observability/audit';
 import { auth } from '@modelcontextprotocol/sdk/client/auth.js';
@@ -285,7 +285,11 @@ export const actions = {
 			result = await withUpstreamLock(record.id, () =>
 				auth(provider, {
 					serverUrl: connection.url as string,
-					fetchFn: createSsrfSafeFetch()
+					fetchFn: createSsrfSafeFetch(
+						oauthSsrfOptions(connection.url as string, {
+							allowPrivateNetwork: getConfig().allowPrivateNetwork
+						})
+					)
 				})
 			);
 		} catch (caught) {
@@ -320,7 +324,9 @@ export const actions = {
 		const record = getSnapshot().upstreamsBySlug.get(params.slug);
 		if (!record) throw error(404, 'Upstream not found');
 
-		clearOAuthConfig(record.id);
+		getDb().transaction((tx) => {
+			clearOAuthConfig(record.id, tx);
+		});
 		recordAudit({
 			actorType: 'user',
 			actorId: locals.user?.id ?? null,

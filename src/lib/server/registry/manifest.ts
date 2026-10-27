@@ -25,6 +25,7 @@ import { assertValidSlug, getSnapshot, reload } from './index.ts';
 import { findSecretLike } from '../security/redact.ts';
 import { events } from './events.ts';
 import { recordAudit } from '../observability/audit.ts';
+import { clearOAuthConfig } from '../upstream/oauth/store.ts';
 
 const oauthConfigSchema = z.object({
 	scopes: z.string().min(1).max(200)
@@ -448,10 +449,15 @@ export function applyManifest(
 						: undefined;
 				// An OAuth row (or an explicit oauth mode) survives a manifest that omits
 				// authMode; only an explicit mode can downgrade the upstream.
-				const authMode =
-					upstream.authMode ??
-					(existingOauth || storedAuthMode === 'oauth' ? 'oauth' : storedAuthMode);
-				const isOauth = authMode === 'oauth';
+				const storedIsOauth = Boolean(existingOauth) || storedAuthMode === 'oauth';
+				const authMode = upstream.authMode ?? (storedIsOauth ? 'oauth' : storedAuthMode);
+				const isOauth = authMode === 'oauth' && upstream.transport === 'http';
+				const storedUrl =
+					typeof storedConnection.url === 'string' ? storedConnection.url : undefined;
+				const nextUrl = upstream.transport === 'http' ? upstream.url : undefined;
+				const endpointChanged =
+					storedIsOauth && isOauth && storedUrl !== undefined && storedUrl !== nextUrl;
+				const leavingOauth = storedIsOauth && !isOauth;
 				const connection =
 					upstream.transport === 'stdio'
 						? {
@@ -511,7 +517,17 @@ export function applyManifest(
 							`upstream "${upstream.slug}" authMode "oauth" needs oauth.scopes`
 						]);
 					}
-					if (!existingOauth) {
+					if (endpointChanged) {
+						clearOAuthConfig(upstreamId, tx);
+						tx.insert(upstreamOauth)
+							.values({
+								upstreamId,
+								status: 'disconnected',
+								scopes,
+								lastError: 'endpoint_changed'
+							})
+							.run();
+					} else if (!existingOauth) {
 						// A fresh import can only describe an unconsented upstream. Status and
 						// token columns are deliberately left at their defaults.
 						tx.insert(upstreamOauth).values({ upstreamId, status: 'disconnected', scopes }).run();
@@ -523,6 +539,8 @@ export function applyManifest(
 							.where(eq(upstreamOauth.upstreamId, upstreamId))
 							.run();
 					}
+				} else if (leavingOauth) {
+					clearOAuthConfig(upstreamId, tx);
 				}
 			}
 

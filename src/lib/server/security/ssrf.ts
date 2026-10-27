@@ -185,6 +185,51 @@ export async function assertUrlAllowed(
  */
 export type FetchLike = (url: string | URL, init?: RequestInit) => Promise<Response>;
 
+/** True for `localhost` and any loopback IP literal, without resolving DNS. */
+export function isLoopbackUrl(input: string | URL): boolean {
+	let url: URL;
+	try {
+		url = typeof input === 'string' ? new URL(input) : input;
+	} catch {
+		return false;
+	}
+	const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+	if (LOCAL_HOSTNAMES.has(host)) return true;
+	return isIP(host) !== 0 && classifyAddress(host) === 'loopback';
+}
+
+/**
+ * Tighten the SSRF policy for OAuth discovery, DCR, and token requests.
+ *
+ * A public upstream must not be able to discover its way into loopback or a
+ * private network: those endpoints are remote-derived, not operator-configured.
+ * An explicitly configured loopback literal keeps loopback access; a private
+ * literal is admitted only when the caller's network policy enables it.
+ */
+export function oauthSsrfOptions(serverUrl: string | URL, base: SsrfOptions = {}): SsrfOptions {
+	let url: URL;
+	try {
+		url = typeof serverUrl === 'string' ? new URL(serverUrl) : serverUrl;
+	} catch {
+		return { ...base, allowLoopback: false, allowPrivateNetwork: false };
+	}
+
+	const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+	const literal = isIP(host) !== 0;
+	const loopback = LOCAL_HOSTNAMES.has(host) || (literal && classifyAddress(host) === 'loopback');
+	const privateLiteral = literal && classifyAddress(host) === 'private';
+
+	if (!loopback && !privateLiteral) {
+		return { ...base, allowLoopback: false, allowPrivateNetwork: false };
+	}
+
+	return {
+		...base,
+		allowLoopback: base.allowLoopback ?? loopback,
+		allowPrivateNetwork: base.allowPrivateNetwork ?? false
+	};
+}
+
 /**
  * `fetch` that refuses unsafe destinations, redirects and hangs. Drop-in for the
  * MCP remote client transport.

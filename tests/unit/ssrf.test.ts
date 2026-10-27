@@ -3,6 +3,8 @@ import {
 	assertUrlAllowed,
 	classifyAddress,
 	createSsrfSafeFetch,
+	isLoopbackUrl,
+	oauthSsrfOptions,
 	SsrfError
 } from '../../src/lib/server/security/ssrf';
 
@@ -226,6 +228,59 @@ describe('assertUrlAllowed: http:// to private IP literals behind MCPGW_ALLOW_PR
 		await expect(
 			assertUrlAllowed('http://10.99.0.102:3300/api/mcp', { resolve: resolve('10.99.0.102') })
 		).rejects.toThrow(/MCPGW_ALLOW_PRIVATE_NETWORK=true/);
+	});
+});
+
+describe('oauthSsrfOptions', () => {
+	test('a public remote upstream keeps discovery, DCR and token fetches strict', () => {
+		expect(isLoopbackUrl('https://mcp.example.com/mcp')).toBe(false);
+		expect(oauthSsrfOptions('https://mcp.example.com/mcp')).toEqual({
+			allowLoopback: false,
+			allowPrivateNetwork: false
+		});
+	});
+
+	test('an explicitly configured loopback upstream retains loopback permission', () => {
+		for (const url of [
+			'http://127.0.0.1:3000/mcp',
+			'http://localhost:3000/mcp',
+			'http://[::1]:3000/mcp'
+		]) {
+			expect(isLoopbackUrl(url)).toBe(true);
+			expect(oauthSsrfOptions(url)).toEqual({
+				allowLoopback: true,
+				allowPrivateNetwork: false
+			});
+		}
+	});
+
+	test('a private literal only gets permission from the configured policy', () => {
+		expect(isLoopbackUrl('https://10.20.30.40/mcp')).toBe(false);
+		expect(oauthSsrfOptions('https://10.20.30.40/mcp')).toEqual({
+			allowLoopback: false,
+			allowPrivateNetwork: false
+		});
+		expect(oauthSsrfOptions('https://10.20.30.40/mcp', { allowPrivateNetwork: true })).toEqual({
+			allowLoopback: false,
+			allowPrivateNetwork: true
+		});
+	});
+
+	test('a public upstream cannot discover its way to loopback or private endpoints', async () => {
+		const options = oauthSsrfOptions('https://mcp.example.com/mcp', {
+			resolve: resolve('93.184.216.34')
+		});
+		const safe = createSsrfSafeFetch(options);
+		await expect(safe('http://127.0.0.1:8080/token')).rejects.toThrow(/loopback/);
+		await expect(safe('https://10.20.30.40/token')).rejects.toThrow(/private range/);
+	});
+
+	test('a malformed configured URL gets the strict policy rather than local permission', () => {
+		expect(isLoopbackUrl('not a url')).toBe(false);
+		expect(oauthSsrfOptions('not a url')).toEqual({
+			allowLoopback: false,
+			allowPrivateNetwork: false
+		});
 	});
 });
 

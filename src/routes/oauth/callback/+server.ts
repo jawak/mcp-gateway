@@ -15,7 +15,7 @@ import { auth } from '@modelcontextprotocol/sdk/client/auth.js';
 import { getConfig } from '$lib/server/config';
 import { recordAudit } from '$lib/server/observability/audit';
 import { redactString } from '$lib/server/security/redact';
-import { createSsrfSafeFetch } from '$lib/server/security/ssrf';
+import { createSsrfSafeFetch, oauthSsrfOptions } from '$lib/server/security/ssrf';
 import { getUpstreamById } from '$lib/server/registry';
 import { resolveAuthMode, type UpstreamRecord } from '$lib/server/upstream/types';
 import {
@@ -101,7 +101,11 @@ export const GET = (async ({ url, locals }) => {
 			const result = await auth(provider, {
 				serverUrl: connection.url,
 				authorizationCode: code,
-				fetchFn: createSsrfSafeFetch()
+				fetchFn: createSsrfSafeFetch(
+					oauthSsrfOptions(connection.url, {
+						allowPrivateNetwork: getConfig().allowPrivateNetwork
+					})
+				)
 			});
 			if (result !== 'AUTHORIZED') {
 				failure = {

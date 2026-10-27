@@ -307,21 +307,31 @@ export function saveTokens(upstreamId: string, tokens: OAuthTokens, db: Db = get
 /** Drop both sealed tokens and every reference/metadata derived from them. */
 export function clearTokens(upstreamId: string, db: Db = getDb()): void {
 	const slug = slugFor(upstreamId, db);
-	deleteTokenSecret(oauthTokenName(slug, 'access'), db);
-	deleteTokenSecret(oauthTokenName(slug, 'refresh'), db);
-
 	const existing = getOAuthConfig(upstreamId, db);
-	if (!existing) return;
-	db.update(upstreamOauth)
-		.set({
-			accessTokenRef: null,
-			refreshTokenRef: null,
-			expiresAt: null,
-			grantedScope: null,
-			updatedAt: nowIso()
-		})
-		.where(eq(upstreamOauth.upstreamId, upstreamId))
-		.run();
+	const names = new Set<string>([oauthTokenName(slug, 'access'), oauthTokenName(slug, 'refresh')]);
+	for (const ref of [existing?.accessTokenRef, existing?.refreshTokenRef]) {
+		if (ref) names.add(ref);
+	}
+
+	if (existing) {
+		db.update(upstreamOauth)
+			.set({
+				status: 'error',
+				lastError: 'invalid_grant',
+				accessTokenRef: null,
+				refreshTokenRef: null,
+				expiresAt: null,
+				grantedScope: null,
+				connectedAt: null,
+				updatedAt: nowIso()
+			})
+			.where(eq(upstreamOauth.upstreamId, upstreamId))
+			.run();
+	}
+
+	for (const name of names) {
+		if (secretReferencedBy(name, db).length === 0) deleteTokenSecret(name, db);
+	}
 }
 
 export function saveClientSecret(

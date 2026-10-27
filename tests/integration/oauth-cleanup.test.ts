@@ -36,6 +36,8 @@ import {
 	secretReferencedBy
 } from '../../src/lib/server/governance/secrets';
 import { runRetention } from '../../src/lib/server/observability/retention';
+import { connectRemoteHttp } from '../../src/lib/server/upstream/remote-http';
+import { UnconfiguredUpstreamError } from '../../src/lib/server/upstream/types';
 import {
 	clearOAuthConfig,
 	createPending,
@@ -294,6 +296,50 @@ describe('oauth → static update', () => {
 		expect(readClientSecret(seeded.id, db)).toBeUndefined();
 		expect(getOAuthConfig(seeded.id, db)).toBeUndefined();
 		expect(getPending(seeded.state, db)).toBeUndefined();
+	});
+});
+
+describe('oauth endpoint change', () => {
+	test('changing the HTTP URL clears tokens, client and discovery before a probe can use the old bearer', async () => {
+		const seeded = seedConnectedOAuth();
+
+		const updated = updateUpstream(
+			seeded.id,
+			{ connection: { url: 'https://new.example.test/mcp', authMode: 'oauth' } },
+			db
+		);
+
+		expect((updated.connection as { url?: string }).url).toBe('https://new.example.test/mcp');
+		const config = getOAuthConfig(seeded.id, db);
+		expect(config?.status).toBe('disconnected');
+		expect(config?.lastError).toBe('endpoint_changed');
+		expect(config?.scopes).toBe('mcp_all');
+		expect(config?.clientId).toBeNull();
+		expect(config?.discovery).toBeNull();
+		expect(config?.authorizationServerUrl).toBeNull();
+		expect(config?.tokenEndpoint).toBeNull();
+		expect(config?.accessTokenRef).toBeNull();
+		expect(config?.refreshTokenRef).toBeNull();
+		expect(readTokenSecret(seeded.accessName, db)).toBeUndefined();
+		expect(readTokenSecret(seeded.refreshName, db)).toBeUndefined();
+		expect(readClientSecret(seeded.id, db)).toBeUndefined();
+		expect(getPending(seeded.state, db)).toBeUndefined();
+
+		const auditRow = getSqlite()
+			.prepare(
+				"select meta from audit_log where action = 'upstream.update' and target_id = ? order by created_at desc, id desc limit 1"
+			)
+			.get(seeded.slug) as { meta: string };
+		expect(auditRow.meta).toContain('endpoint_changed');
+
+		let caught: unknown;
+		try {
+			await connectRemoteHttp({ record: updated });
+		} catch (error) {
+			caught = error;
+		}
+		expect(caught).toBeInstanceOf(UnconfiguredUpstreamError);
+		expect((caught as Error).message).toMatch(/authorization required/i);
 	});
 });
 

@@ -22,6 +22,7 @@ import {
 	deleteOAuthConfig,
 	getOAuthConfig,
 	getPending,
+	oauthTokenName,
 	readClientSecret,
 	readTokenSecret,
 	saveClientSecret,
@@ -165,9 +166,45 @@ describe('oauth token secrets', () => {
 		expect(config?.refreshTokenRef).toBeNull();
 		expect(config?.expiresAt).toBeNull();
 		expect(config?.grantedScope).toBeNull();
+		expect(config?.status).toBe('error');
+		expect(config?.lastError).toBe('invalid_grant');
+		expect(config?.connectedAt).toBeNull();
 		expect(rawSecret(`oauth_${slug}_access`)).toBeUndefined();
 		expect(rawSecret(`oauth_${slug}_refresh`)).toBeUndefined();
 		expect(readTokenSecret(`oauth_${slug}_access`)).toBeUndefined();
+	});
+
+	test('keeps a token secret another upstream still references', () => {
+		const { id, slug } = insertUpstream();
+		saveTokens(id, {
+			access_token: ACCESS,
+			token_type: 'Bearer',
+			refresh_token: REFRESH,
+			expires_in: 3600
+		});
+		const accessName = oauthTokenName(slug, 'access');
+		getDb()
+			.insert(schema.upstreams)
+			.values({
+				id: uuidv7(),
+				slug: `ref-${uuidv7().slice(-8)}`,
+				name: 'Static reference',
+				transport: 'http',
+				connection: {
+					url: 'https://static.example.test/mcp',
+					authMode: 'static',
+					authRef: `secret:${accessName}`
+				}
+			})
+			.run();
+
+		clearTokens(id);
+
+		expect(readTokenSecret(accessName)).toBe(ACCESS);
+		expect(rawSecret(accessName)).toBeDefined();
+		expect(rawSecret(oauthTokenName(slug, 'refresh'))).toBeUndefined();
+		expect(getOAuthConfig(id)?.accessTokenRef).toBeNull();
+		expect(getOAuthConfig(id)?.status).toBe('error');
 	});
 });
 
