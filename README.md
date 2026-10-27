@@ -285,6 +285,36 @@ The dashboard issues a key and shows copy-paste config for each client. The gene
 
 Clients that only speak stdio can bridge through `npx mcp-remote <url> --header "Authorization: Bearer …"`.
 
+## OAuth 2.0 upstreams (shared client)
+
+An HTTP upstream can authenticate with OAuth 2.0 instead of a static header. Choose the
+`oauth` auth mode when creating it; the gateway registers itself as a public client through
+dynamic client registration, seals the resulting tokens in its vault, and refreshes them
+under a single-flight, per-upstream lock.
+
+- **One consent, shared identity.** The admin who clicks Connect authorizes one Datadog
+  user. Every gateway caller — every API key and profile — then acts as that user, with
+  that user's Datadog RBAC and Audit Trail attribution. This is not per-user OAuth, and the
+  gateway does not forward the caller's identity.
+- **Exact redirect URI.** The callback is `${MCPGW_PUBLIC_URL.origin}/oauth/callback`,
+  always at the origin root. The upstream page shows the exact value; allowlist it under
+  Datadog **Organization Settings → MCP OAuth Redirect URLs** before clicking Connect.
+- **Datadog EU example.** Use
+  `https://mcp.datadoghq.eu/api/unstable/mcp-server/mcp?toolsets=core` (or `?toolsets=all`)
+  with the `mcp_all` scope. The endpoint is operator input, not hardcoded — the gateway
+  discovers OAuth metadata from whatever URL you save.
+- **Read first.** Choose **Limited access** at Datadog's consent screen for read-only use.
+  Write tools additionally need **Full access**, the organization's **MCP Write Access**
+  toggle, and the `mcp_write` role permission.
+- **Revocation vs Disconnect.** Revoking the grant under Datadog **Personal Settings →
+  Authorized Apps** affects every caller; the gateway's local **Disconnect** deletes its
+  sealed tokens but does not revoke the Datadog grant.
+
+The full EU runbook — allowlisting, consent profiles, `mcp_all`, revocation, path-prefix
+routing, and a troubleshooting table (`Mismatching redirect URI`, `invalid_scope`,
+`invalid_target`, `authorization_required`, `invalid_grant`, region mismatch) — is in
+[`docs/datadog-mcp-oauth.md`](./docs/datadog-mcp-oauth.md).
+
 ## Two databases, one server type
 
 The same MCP server against a dev and a prod database is the normal way to use this:
