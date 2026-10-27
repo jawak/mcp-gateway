@@ -40,6 +40,15 @@ export const SECRET_PATTERNS: SecretPattern[] = [
 		pattern: /\b(authorization|proxy-authorization)\s*[:=]\s*(?:bearer|basic|token)\s+\S+/gi
 	},
 	{
+		// OAuth flow material: the `assignment` pattern below already catches
+		// access/refresh token keys, but it cannot see quoted JSON keys and knows
+		// nothing about `code`, `state`, or `code_verifier`. `error` and
+		// `oauthError` are deliberately absent so safe OAuth error codes survive.
+		name: 'oauth-assignment',
+		pattern:
+			/(?<![\w.-])["']?(access_token|refresh_token|id_token|code_verifier|code|state)["']?\s*[:=]\s*("[^"\n]{3,}"|'[^'\n]{3,}'|[^\s,;&}]{3,})/gi
+	},
+	{
 		name: 'assignment',
 		pattern:
 			/\b([a-z0-9_.-]*(?:token|secret|password|passwd|pwd|api[-_]?key|access[-_]?key|client[-_]?secret|authorization|cookie)[a-z0-9_.-]*)\s*[:=]\s*("[^"\n]{3,}"|'[^'\n]{3,}'|[^\s,;}&]{3,})/gi
@@ -50,7 +59,7 @@ export const REDACTED = '[redacted]';
 
 /** JSON/object keys whose values must never be logged verbatim. */
 const SECRET_KEY_RE =
-	/(^|_|-|\.)(token|secret|password|passwd|pwd|apikey|api_key|access_key|authorization|cookie|credential|session)$/i;
+	/(^|_|-|\.)(token|secret|password|passwd|pwd|apikey|api_key|access_key|authorization|cookie|credential|session|code_verifier)$/i;
 
 export function isSecretKey(key: string): boolean {
 	return SECRET_KEY_RE.test(key.toLowerCase()) || key.toLowerCase() === 'authorization';
