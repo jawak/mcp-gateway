@@ -11,7 +11,7 @@
  * This is an internal module: no route or transport imports it for reads.
  */
 import type { OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
-import { eq } from 'drizzle-orm';
+import { and, desc, eq, gt } from 'drizzle-orm';
 import { getDb, type Db } from '../../db/index.ts';
 import { secretRefs, upstreamOauth, upstreamOauthPending, upstreams } from '../../db/schema.ts';
 import { recordAudit } from '../../observability/audit.ts';
@@ -336,24 +336,27 @@ export function getPending(state: string, db: Db = getDb()): PendingRow | undefi
 /**
  * Seal the PKCE verifier into the pending row created by `createPending`.
  * The row stores the JSON `Sealed` record, never the plaintext verifier.
+ *
+ * Returns `false` when the row no longer exists (for example after a concurrent
+ * consume or a provider that never created a pending state), so the caller can
+ * surface a typed error instead of silently continuing to `/authorize`.
  */
-export function savePendingVerifier(state: string, verifier: string, db: Db = getDb()): void {
+export function savePendingVerifier(state: string, verifier: string, db: Db = getDb()): boolean {
 	if (verifier.length === 0) throw new Error('refusing to store an empty PKCE verifier');
 	const sealed = sealSecret(verifier);
-	db.update(upstreamOauthPending)
+	const updated = db
+		.update(upstreamOauthPending)
 		.set({ verifierSealed: JSON.stringify(sealed) })
 		.where(eq(upstreamOauthPending.state, state))
-		.run();
+		.returning({ state: upstreamOauthPending.state })
+		.get();
+	return updated !== undefined;
 }
 
-/** Open the pending verifier; undefined when the row is missing, expired, or unreadable. */
-export function readPendingVerifier(state: string, db: Db = getDb()): string | undefined {
-	const row = getPending(state, db);
-	if (!row || row.expiresAt <= nowIso()) return undefined;
-
+function openVerifierSealed(sealedJson: string): string | undefined {
 	let sealed: Sealed;
 	try {
-		sealed = JSON.parse(row.verifierSealed) as Sealed;
+		sealed = JSON.parse(sealedJson) as Sealed;
 	} catch {
 		return undefined;
 	}
@@ -363,6 +366,40 @@ export function readPendingVerifier(state: string, db: Db = getDb()): string | u
 		if (error instanceof VaultError) return undefined;
 		throw error;
 	}
+}
+
+/** Open the pending verifier; undefined when the row is missing, expired, or unreadable. */
+export function readPendingVerifier(state: string, db: Db = getDb()): string | undefined {
+	const row = getPending(state, db);
+	if (!row || row.expiresAt <= nowIso()) return undefined;
+	return openVerifierSealed(row.verifierSealed);
+}
+
+/**
+ * Newest non-expired verifier for an upstream, independent of which provider
+ * instance created the flow. The OAuth callback constructs a fresh provider, so
+ * this is how it recovers the PKCE verifier stored by the earlier `state()`.
+ * A pending row whose verifier is still the sealed empty placeholder is not a
+ * usable verifier and is reported as absent.
+ */
+export function newestPendingVerifierForUpstream(
+	upstreamId: string,
+	db: Db = getDb()
+): string | undefined {
+	const row = db
+		.select()
+		.from(upstreamOauthPending)
+		.where(
+			and(
+				eq(upstreamOauthPending.upstreamId, upstreamId),
+				gt(upstreamOauthPending.expiresAt, nowIso())
+			)
+		)
+		.orderBy(desc(upstreamOauthPending.createdAt))
+		.get();
+	if (!row) return undefined;
+	const verifier = openVerifierSealed(row.verifierSealed);
+	return verifier && verifier.length > 0 ? verifier : undefined;
 }
 
 /**

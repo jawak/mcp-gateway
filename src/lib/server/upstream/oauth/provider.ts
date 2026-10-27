@@ -21,6 +21,7 @@ import {
 	deletePendingForUpstream,
 	deleteTokenSecret,
 	getOAuthConfig,
+	newestPendingVerifierForUpstream,
 	readClientSecret,
 	readPendingVerifier,
 	readTokenSecret,
@@ -39,12 +40,17 @@ export type OAuthProviderOptions = {
 	serverUrl: string | URL;
 	publicUrl: URL;
 	scopes: string;
+	/** Admin who started the flow; persisted on the pending row for the callback check. */
+	createdBy?: string | null;
 };
 
 export type OAuthProvider = Omit<
 	OAuthClientProvider,
 	| 'state'
 	| 'codeVerifier'
+	| 'tokens'
+	| 'saveTokens'
+	| 'clientInformation'
 	| 'saveClientInformation'
 	| 'discoveryState'
 	| 'saveDiscoveryState'
@@ -52,6 +58,9 @@ export type OAuthProvider = Omit<
 > & {
 	state(): string;
 	codeVerifier(): string;
+	tokens(): OAuthTokens | undefined;
+	saveTokens(tokens: OAuthTokens): void;
+	clientInformation(): OAuthClientInformationMixed | undefined;
 	saveClientInformation(clientInformation: OAuthClientInformationMixed): void;
 	discoveryState(): OAuthDiscoveryState | undefined;
 	saveDiscoveryState(discovery: OAuthDiscoveryState): void;
@@ -104,12 +113,14 @@ class StoreBackedOAuthProvider implements OAuthProvider {
 	readonly #upstreamId: string;
 	readonly #publicUrl: URL;
 	readonly #scopes: string;
+	readonly #createdBy: string | null;
 	#pendingState: string | undefined;
 
 	constructor(options: OAuthProviderOptions) {
 		this.#upstreamId = options.upstreamId;
 		this.#publicUrl = options.publicUrl;
 		this.#scopes = options.scopes;
+		this.#createdBy = options.createdBy ?? null;
 	}
 
 	get redirectUrl(): string {
@@ -133,6 +144,7 @@ class StoreBackedOAuthProvider implements OAuthProvider {
 			state,
 			upstreamId: this.#upstreamId,
 			redirectUri: this.redirectUrl,
+			createdBy: this.#createdBy,
 			ttlMs: PENDING_TTL_MS
 		});
 		this.#pendingState = state;
@@ -150,7 +162,21 @@ class StoreBackedOAuthProvider implements OAuthProvider {
 	}
 
 	saveClientInformation(clientInformation: OAuthClientInformationMixed): void {
-		upsertOAuthConfig(this.#upstreamId, { clientId: clientInformation.client_id });
+		const existing = getOAuthConfig(this.#upstreamId);
+		const hasSecret = Boolean(clientInformation.client_secret);
+		const clientIdChanged =
+			existing?.clientId != null && existing.clientId !== clientInformation.client_id;
+		const staleSecretRef =
+			existing?.clientSecretRef && (!hasSecret || clientIdChanged)
+				? existing.clientSecretRef
+				: undefined;
+		if (staleSecretRef) deleteTokenSecret(staleSecretRef);
+
+		const patch: { clientId: string; clientSecretRef?: null } = {
+			clientId: clientInformation.client_id
+		};
+		if (!hasSecret) patch.clientSecretRef = null;
+		upsertOAuthConfig(this.#upstreamId, patch);
 		if (clientInformation.client_secret) {
 			saveClientSecret(this.#upstreamId, clientInformation.client_secret);
 		}
@@ -220,21 +246,24 @@ class StoreBackedOAuthProvider implements OAuthProvider {
 	}
 
 	saveCodeVerifier(codeVerifier: string): void {
-		if (!this.#pendingState) {
+		const saved = this.#pendingState
+			? savePendingVerifier(this.#pendingState, codeVerifier)
+			: false;
+		if (!saved) {
+			this.#pendingState = undefined;
 			throw new OAuthStateError('missing_pending_state', 'no pending authorization state');
 		}
-		savePendingVerifier(this.#pendingState, codeVerifier);
 	}
 
 	codeVerifier(): string {
-		if (!this.#pendingState) {
+		const remembered = this.#pendingState ? readPendingVerifier(this.#pendingState) : undefined;
+		if (remembered !== undefined) return remembered;
+
+		const newest = newestPendingVerifierForUpstream(this.#upstreamId);
+		if (newest === undefined) {
 			throw new OAuthStateError('missing_code_verifier', 'no pending code verifier');
 		}
-		const verifier = readPendingVerifier(this.#pendingState);
-		if (verifier === undefined) {
-			throw new OAuthStateError('missing_code_verifier', 'no pending code verifier');
-		}
-		return verifier;
+		return newest;
 	}
 
 	invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery'): void {
