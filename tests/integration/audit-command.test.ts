@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import path from 'node:path';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 import { createUpstream, ensureLoaded, updateUpstream } from '../../src/lib/server/registry';
 import { auditLog } from '../../src/lib/server/db/schema';
 import { getDb, useDatabaseForTests } from '../../src/lib/server/db';
@@ -24,7 +24,7 @@ function lastAudit(action: string, target: string): Record<string, unknown> | un
 		.select()
 		.from(auditLog)
 		.where(eq(auditLog.action, action))
-		.orderBy(desc(auditLog.id))
+		.orderBy(desc(sql`rowid`))
 		.all()
 		.find((entry) => entry.targetId === target);
 	return (row?.meta ?? undefined) as Record<string, unknown> | undefined;
