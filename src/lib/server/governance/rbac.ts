@@ -28,8 +28,13 @@ export type AccessDecision =
 	| { action: 'forbidden'; reason: string };
 
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
-/** Paths reachable without a session: the login page and its own actions. */
-const PUBLIC_PATHS = new Set(['/', '/login', '/healthz']);
+/**
+ * Paths reachable without a session: the login page, health, and the OAuth
+ * callback. The callback is public by design — the authorization server's
+ * browser redirect carries no session — and its `state` parameter is the CSRF
+ * token that authenticates the pending flow.
+ */
+const PUBLIC_PATHS = new Set(['/', '/login', '/healthz', '/oauth/callback']);
 const PUBLIC_PREFIXES = ['/login', '/_app/', '/favicon'];
 
 export function isPublicPath(pathname: string): boolean {
