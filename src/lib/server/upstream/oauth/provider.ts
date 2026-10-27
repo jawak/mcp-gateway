@@ -56,6 +56,7 @@ export type OAuthProvider = Omit<
 	| 'saveDiscoveryState'
 	| 'invalidateCredentials'
 > & {
+	readonly upstreamId: string;
 	state(): string;
 	codeVerifier(): string;
 	tokens(): OAuthTokens | undefined;
@@ -110,14 +111,14 @@ function supportedAuthMethods(discovery: OAuthDiscoveryState): string[] | undefi
 }
 
 class StoreBackedOAuthProvider implements OAuthProvider {
-	readonly #upstreamId: string;
+	readonly upstreamId: string;
 	readonly #publicUrl: URL;
 	readonly #scopes: string;
 	readonly #createdBy: string | null;
 	#pendingState: string | undefined;
 
 	constructor(options: OAuthProviderOptions) {
-		this.#upstreamId = options.upstreamId;
+		this.upstreamId = options.upstreamId;
 		this.#publicUrl = options.publicUrl;
 		this.#scopes = options.scopes;
 		this.#createdBy = options.createdBy ?? null;
@@ -142,7 +143,7 @@ class StoreBackedOAuthProvider implements OAuthProvider {
 		const state = randomBytes(32).toString('base64url');
 		createPending({
 			state,
-			upstreamId: this.#upstreamId,
+			upstreamId: this.upstreamId,
 			redirectUri: this.redirectUrl,
 			createdBy: this.#createdBy,
 			ttlMs: PENDING_TTL_MS
@@ -152,17 +153,17 @@ class StoreBackedOAuthProvider implements OAuthProvider {
 	}
 
 	clientInformation(): OAuthClientInformationMixed | undefined {
-		const config = getOAuthConfig(this.#upstreamId);
+		const config = getOAuthConfig(this.upstreamId);
 		if (!config?.clientId) return undefined;
 
 		const information: OAuthClientInformationMixed = { client_id: config.clientId };
-		const secret = readClientSecret(this.#upstreamId);
+		const secret = readClientSecret(this.upstreamId);
 		if (secret) information.client_secret = secret;
 		return information;
 	}
 
 	saveClientInformation(clientInformation: OAuthClientInformationMixed): void {
-		const existing = getOAuthConfig(this.#upstreamId);
+		const existing = getOAuthConfig(this.upstreamId);
 		const hasSecret = Boolean(clientInformation.client_secret);
 		const clientIdChanged =
 			existing?.clientId != null && existing.clientId !== clientInformation.client_id;
@@ -176,14 +177,14 @@ class StoreBackedOAuthProvider implements OAuthProvider {
 			clientId: clientInformation.client_id
 		};
 		if (!hasSecret) patch.clientSecretRef = null;
-		upsertOAuthConfig(this.#upstreamId, patch);
+		upsertOAuthConfig(this.upstreamId, patch);
 		if (clientInformation.client_secret) {
-			saveClientSecret(this.#upstreamId, clientInformation.client_secret);
+			saveClientSecret(this.upstreamId, clientInformation.client_secret);
 		}
 	}
 
 	discoveryState(): OAuthDiscoveryState | undefined {
-		const discovery = getOAuthConfig(this.#upstreamId)?.discovery;
+		const discovery = getOAuthConfig(this.upstreamId)?.discovery;
 		return discovery ? (discovery as unknown as OAuthDiscoveryState) : undefined;
 	}
 
@@ -194,7 +195,7 @@ class StoreBackedOAuthProvider implements OAuthProvider {
 		}
 
 		const metadata = discovery.authorizationServerMetadata;
-		upsertOAuthConfig(this.#upstreamId, {
+		upsertOAuthConfig(this.upstreamId, {
 			discovery: JSON.parse(JSON.stringify(discovery)) as Record<string, unknown>,
 			authorizationServerUrl: discovery.authorizationServerUrl ?? null,
 			resourceMetadataUrl: discovery.resourceMetadataUrl ?? null,
@@ -207,7 +208,7 @@ class StoreBackedOAuthProvider implements OAuthProvider {
 	}
 
 	tokens(): OAuthTokens | undefined {
-		const config = getOAuthConfig(this.#upstreamId);
+		const config = getOAuthConfig(this.upstreamId);
 		if (!config?.accessTokenRef) return undefined;
 
 		const accessToken = readTokenSecret(config.accessTokenRef);
@@ -232,7 +233,7 @@ class StoreBackedOAuthProvider implements OAuthProvider {
 	}
 
 	saveTokens(tokens: OAuthTokens): void {
-		persistTokens(this.#upstreamId, tokens);
+		persistTokens(this.upstreamId, tokens);
 	}
 
 	redirectToAuthorization(authorizationUrl: URL): void {
@@ -242,7 +243,7 @@ class StoreBackedOAuthProvider implements OAuthProvider {
 				'authorization URL must use https, or loopback http in tests'
 			);
 		}
-		throw new OAuthAuthorizationRequiredError(authorizationUrl, this.#upstreamId);
+		throw new OAuthAuthorizationRequiredError(authorizationUrl, this.upstreamId);
 	}
 
 	saveCodeVerifier(codeVerifier: string): void {
@@ -259,7 +260,7 @@ class StoreBackedOAuthProvider implements OAuthProvider {
 		const remembered = this.#pendingState ? readPendingVerifier(this.#pendingState) : undefined;
 		if (remembered !== undefined) return remembered;
 
-		const newest = newestPendingVerifierForUpstream(this.#upstreamId);
+		const newest = newestPendingVerifierForUpstream(this.upstreamId);
 		if (newest === undefined) {
 			throw new OAuthStateError('missing_code_verifier', 'no pending code verifier');
 		}
@@ -274,25 +275,25 @@ class StoreBackedOAuthProvider implements OAuthProvider {
 	}
 
 	#invalidateClient(): void {
-		const config = getOAuthConfig(this.#upstreamId);
+		const config = getOAuthConfig(this.upstreamId);
 		if (!config) return;
 		if (config.clientSecretRef) deleteTokenSecret(config.clientSecretRef);
-		upsertOAuthConfig(this.#upstreamId, { clientId: null, clientSecretRef: null });
+		upsertOAuthConfig(this.upstreamId, { clientId: null, clientSecretRef: null });
 	}
 
 	#invalidateTokens(): void {
-		if (!getOAuthConfig(this.#upstreamId)) return;
-		clearTokens(this.#upstreamId);
+		if (!getOAuthConfig(this.upstreamId)) return;
+		clearTokens(this.upstreamId);
 	}
 
 	#invalidateVerifier(): void {
-		deletePendingForUpstream(this.#upstreamId);
+		deletePendingForUpstream(this.upstreamId);
 		this.#pendingState = undefined;
 	}
 
 	#invalidateDiscovery(): void {
-		if (!getOAuthConfig(this.#upstreamId)) return;
-		upsertOAuthConfig(this.#upstreamId, {
+		if (!getOAuthConfig(this.upstreamId)) return;
+		upsertOAuthConfig(this.upstreamId, {
 			discovery: null,
 			authorizationServerUrl: null,
 			resourceMetadataUrl: null,
