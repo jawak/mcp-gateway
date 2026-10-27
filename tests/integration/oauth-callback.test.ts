@@ -53,7 +53,12 @@ type Locals = {
 type Upstream = { id: string; slug: string };
 
 const adminUser = { id: '', email: ADMIN_EMAIL, role: 'admin' as const, status: 'active' as const };
-const viewerUser = { id: '', email: VIEWER_EMAIL, role: 'viewer' as const, status: 'active' as const };
+const viewerUser = {
+	id: '',
+	email: VIEWER_EMAIL,
+	role: 'viewer' as const,
+	status: 'active' as const
+};
 const admin: Locals = { user: adminUser, sessionId: null };
 const viewer: Locals = { user: viewerUser, sessionId: null };
 
@@ -112,9 +117,7 @@ async function startPending(upstream: Upstream): Promise<string> {
 	return new URL(redirect.location).searchParams.get('state') as string;
 }
 
-async function startAuthorizedFlow(
-	upstream: Upstream
-): Promise<{ state: string; code: string }> {
+async function startAuthorizedFlow(upstream: Upstream): Promise<{ state: string; code: string }> {
 	const thrown = await callAction('oauthStart', upstream.slug);
 	const redirect = expectRedirect(thrown);
 	const authorize = await fetch(redirect.location, { redirect: 'manual' });
@@ -135,10 +138,7 @@ type CallbackParams = {
 
 type CallbackResult = { thrown: unknown; response?: Response };
 
-async function callCallback(
-	params: CallbackParams,
-	who: Locals['user']
-): Promise<CallbackResult> {
+async function callCallback(params: CallbackParams, who: Locals['user']): Promise<CallbackResult> {
 	const url = new URL('http://localhost/oauth/callback');
 	for (const [key, value] of Object.entries(params)) {
 		if (value !== undefined) url.searchParams.set(key, value);

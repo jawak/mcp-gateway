@@ -127,10 +127,7 @@ export const GET = (async ({ url, locals }) => {
 
 	if (failure) {
 		failCallback(record, pending, failure.code, failure.detail);
-		throw redirect(
-			303,
-			detailPath(record.slug, `oauthError=${encodeURIComponent(failure.code)}`)
-		);
+		throw redirect(303, detailPath(record.slug, `oauthError=${encodeURIComponent(failure.code)}`));
 	}
 
 	setOAuthStatus(record.id, 'connected', { connectedBy: pending.createdBy ?? null });
@@ -159,7 +156,12 @@ function detailPath(slug: string, query: string): string {
 	return `/admin/upstreams/${encodeURIComponent(slug)}?${query}`;
 }
 
-function failCallback(record: UpstreamRecord, pending: PendingRow, code: string, detail: string): void {
+function failCallback(
+	record: UpstreamRecord,
+	pending: PendingRow,
+	code: string,
+	detail: string
+): void {
 	setOAuthStatus(record.id, 'error', { lastError: detail });
 	recordAudit({
 		actorType: 'system',

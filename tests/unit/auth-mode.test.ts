@@ -21,7 +21,11 @@ import {
 	RegistryError,
 	updateUpstream
 } from '../../src/lib/server/registry';
-import { resolveAuthMode, type AuthMode, type HttpConnection } from '../../src/lib/server/upstream/types';
+import {
+	resolveAuthMode,
+	type AuthMode,
+	type HttpConnection
+} from '../../src/lib/server/upstream/types';
 import { getDb, useDatabaseForTests } from '../../src/lib/server/db';
 import { runMigrations } from '../../src/lib/server/db/migrate';
 import { resetConfigCache } from '../../src/lib/server/config';
@@ -111,11 +115,7 @@ describe('resolveAuthMode', () => {
 describe('createUpstream auth-mode matrix', () => {
 	test('oauth over HTTP persists authMode inside connection JSON and no authRef', () => {
 		const slug = nextSlug();
-		create(
-			slug,
-			'http',
-			connection({ authMode: 'oauth', authStyle: 'none' })
-		);
+		create(slug, 'http', connection({ authMode: 'oauth', authStyle: 'none' }));
 		const record = getUpstreamById(rowsForSlug(slug)[0].id);
 		const conn = record?.connection as HttpConnection;
 		expect(conn.authMode).toBe('oauth');
@@ -212,7 +212,9 @@ describe('createUpstream auth-mode matrix', () => {
 		const slug = nextSlug();
 		create(slug, 'http', connection({ authRef: 'secret:x' }));
 		const record = getUpstreamById(rowsForSlug(slug)[0].id);
-		expect(resolveAuthMode(record?.connection as HttpConnection, record?.headersRef)).toBe('static');
+		expect(resolveAuthMode(record?.connection as HttpConnection, record?.headersRef)).toBe(
+			'static'
+		);
 	});
 });
 
