@@ -15,7 +15,7 @@ import { eq } from 'drizzle-orm';
 import { getDb, type Db } from '../../db/index.ts';
 import { secretRefs, upstreamOauth, upstreamOauthPending, upstreams } from '../../db/schema.ts';
 import { recordAudit } from '../../observability/audit.ts';
-import { openSecret, sealSecret, VaultError } from '../../security/vault.ts';
+import { openSecret, sealSecret, VaultError, type Sealed } from '../../security/vault.ts';
 import { isoFromNow, nowIso } from '../../../shared/time.ts';
 import { uuidv7 } from '../../../shared/ids.ts';
 
@@ -331,6 +331,38 @@ export function createPending(input: CreatePendingInput, db: Db = getDb()): Pend
 
 export function getPending(state: string, db: Db = getDb()): PendingRow | undefined {
 	return db.select().from(upstreamOauthPending).where(eq(upstreamOauthPending.state, state)).get();
+}
+
+/**
+ * Seal the PKCE verifier into the pending row created by `createPending`.
+ * The row stores the JSON `Sealed` record, never the plaintext verifier.
+ */
+export function savePendingVerifier(state: string, verifier: string, db: Db = getDb()): void {
+	if (verifier.length === 0) throw new Error('refusing to store an empty PKCE verifier');
+	const sealed = sealSecret(verifier);
+	db.update(upstreamOauthPending)
+		.set({ verifierSealed: JSON.stringify(sealed) })
+		.where(eq(upstreamOauthPending.state, state))
+		.run();
+}
+
+/** Open the pending verifier; undefined when the row is missing, expired, or unreadable. */
+export function readPendingVerifier(state: string, db: Db = getDb()): string | undefined {
+	const row = getPending(state, db);
+	if (!row || row.expiresAt <= nowIso()) return undefined;
+
+	let sealed: Sealed;
+	try {
+		sealed = JSON.parse(row.verifierSealed) as Sealed;
+	} catch {
+		return undefined;
+	}
+	try {
+		return openSecret(sealed);
+	} catch (error) {
+		if (error instanceof VaultError) return undefined;
+		throw error;
+	}
 }
 
 /**
